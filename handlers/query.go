@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tobilg/caddyserver-duckdb-module/auth"
-	"github.com/tobilg/caddyserver-duckdb-module/database"
-	"github.com/tobilg/caddyserver-duckdb-module/formats"
+	"github.com/tobilg/caddy-duckdb-module/auth"
+	"github.com/tobilg/caddy-duckdb-module/database"
+	"github.com/tobilg/caddy-duckdb-module/formats"
 	"go.uber.org/zap"
 )
 

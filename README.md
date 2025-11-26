@@ -21,8 +21,8 @@ Get up and running in under 2 minutes:
 
 ```bash
 # Clone the repository
-git clone https://github.com/tobilg/caddyserver-duckdb-module.git
-cd caddyserver-duckdb-module
+git clone https://github.com/tobilg/caddy-duckdb-module.git
+cd caddy-duckdb-module
 
 # Build the server and tools
 make build-all
@@ -71,8 +71,8 @@ The recommended way to build Caddy with the DuckDB module is using the provided 
 
 ```bash
 # Clone the repository
-git clone https://github.com/tobilg/caddyserver-duckdb-module.git
-cd caddyserver-duckdb-module
+git clone https://github.com/tobilg/caddy-duckdb-module.git
+cd caddy-duckdb-module
 
 # Download dependencies
 go mod download
@@ -92,10 +92,10 @@ You can also use xcaddy for published versions:
 go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
 # Build from GitHub (CGO_ENABLED=1 is required!)
-CGO_ENABLED=1 xcaddy build --with github.com/tobilg/caddyserver-duckdb-module
+CGO_ENABLED=1 xcaddy build --with github.com/tobilg/caddy-duckdb-module
 
 # Build from local source
-CGO_ENABLED=1 xcaddy build --with github.com/tobilg/caddyserver-duckdb-module=.
+CGO_ENABLED=1 xcaddy build --with github.com/tobilg/caddy-duckdb-module=.
 ```
 
 **Important:** You must set `CGO_ENABLED=1` when using xcaddy. Without it, the DuckDB C bindings won't compile and the build will fail with "undefined: bindings.Type" errors.
@@ -908,7 +908,7 @@ See the API Endpoints section above for examples.
 ### Project Structure
 
 ```
-caddyserver-duckdb-module/
+caddy-duckdb-module/
 ├── module.go              # Main Caddy module
 ├── config.go              # Configuration structs
 ├── database/

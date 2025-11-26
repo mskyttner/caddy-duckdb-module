@@ -13,9 +13,9 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/google/uuid"
-	"github.com/tobilg/caddyserver-duckdb-module/auth"
-	"github.com/tobilg/caddyserver-duckdb-module/database"
-	"github.com/tobilg/caddyserver-duckdb-module/handlers"
+	"github.com/tobilg/caddy-duckdb-module/auth"
+	"github.com/tobilg/caddy-duckdb-module/database"
+	"github.com/tobilg/caddy-duckdb-module/handlers"
 	"go.uber.org/zap"
 )
 

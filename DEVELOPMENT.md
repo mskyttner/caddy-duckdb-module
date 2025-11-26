@@ -32,8 +32,8 @@ gcc --version  # or clang --version on macOS
 
 ```bash
 # Clone the repository
-git clone https://github.com/tobilg/caddyserver-duckdb-module.git
-cd caddyserver-duckdb-module
+git clone https://github.com/tobilg/caddy-duckdb-module.git
+cd caddy-duckdb-module
 
 # Run setup (checks prerequisites, builds, generates API key)
 make setup
@@ -76,7 +76,7 @@ Run `make help` to see all available commands:
 ## Project Structure
 
 ```
-caddyserver-duckdb-module/
+caddy-duckdb-module/
 ├── cmd/
 │   └── caddy/
 │       └── main.go          # Caddy entry point

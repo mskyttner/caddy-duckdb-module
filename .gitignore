@@ -41,7 +41,7 @@ Thumbs.db
 
 # Build artifacts (root-level binaries only)
 /caddy
-/caddyserver-duckdb-module
+/caddy-duckdb-module
 
 # Test data
 /data/

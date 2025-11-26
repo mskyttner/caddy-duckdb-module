@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tobilg/caddyserver-duckdb-module/database"
+	"github.com/tobilg/caddy-duckdb-module/database"
 )
 
 // ParsePagination parses pagination parameters from the request.

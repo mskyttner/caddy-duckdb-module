@@ -43,7 +43,7 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 			"version":     "1.0.0",
 			"contact": map[string]interface{}{
 				"name": "GitHub Repository",
-				"url":  "https://github.com/tobilg/caddyserver-duckdb-module",
+				"url":  "https://github.com/tobilg/caddy-duckdb-module",
 			},
 			"license": map[string]interface{}{
 				"name": "MIT",

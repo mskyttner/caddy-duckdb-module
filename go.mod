@@ -1,4 +1,4 @@
-module github.com/tobilg/caddyserver-duckdb-module
+module github.com/tobilg/caddy-duckdb-module
 
 go 1.24.7
 

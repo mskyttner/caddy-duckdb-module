@@ -103,7 +103,7 @@ func TestOpenAPIHandler_Spec_Info(t *testing.T) {
 	if !ok {
 		t.Fatal("Expected 'contact' object in info")
 	}
-	if contact["url"] != "https://github.com/tobilg/caddyserver-duckdb-module" {
+	if contact["url"] != "https://github.com/tobilg/caddy-duckdb-module" {
 		t.Errorf("Unexpected contact URL: %v", contact["url"])
 	}
 

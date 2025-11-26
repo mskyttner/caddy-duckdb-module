@@ -359,7 +359,7 @@ jobs:
           caddy-duckdb-windows-amd64.exe version
           \`\`\`
 
-          See the [README](https://github.com/tobilg/caddyserver-duckdb-module#readme) for configuration and usage instructions.
+          See the [README](https://github.com/tobilg/caddy-duckdb-module#readme) for configuration and usage instructions.
           EOF
 
       - name: Create GitHub Release

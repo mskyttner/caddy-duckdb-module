@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tobilg/caddyserver-duckdb-module/database"
+	"github.com/tobilg/caddy-duckdb-module/database"
 	"go.uber.org/zap"
 )
 

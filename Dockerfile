@@ -71,7 +71,7 @@ COPY --chown=caddy:caddy examples/Caddyfile.docker /etc/caddy/Caddyfile
 # Labels
 LABEL org.opencontainers.image.title="Caddy DuckDB Module" \
       org.opencontainers.image.description="Caddy server with DuckDB REST API" \
-      org.opencontainers.image.source="https://github.com/tobilg/caddyserver-duckdb-module" \
+      org.opencontainers.image.source="https://github.com/tobilg/caddy-duckdb-module" \
       org.opencontainers.image.licenses="MIT"
 
 # Expose default port

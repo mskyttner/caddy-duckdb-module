@@ -12,9 +12,9 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
-	"github.com/tobilg/caddyserver-duckdb-module/auth"
-	"github.com/tobilg/caddyserver-duckdb-module/database"
-	"github.com/tobilg/caddyserver-duckdb-module/handlers"
+	"github.com/tobilg/caddy-duckdb-module/auth"
+	"github.com/tobilg/caddy-duckdb-module/database"
+	"github.com/tobilg/caddy-duckdb-module/handlers"
 	"go.uber.org/zap"
 )
 
