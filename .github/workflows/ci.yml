@@ -307,8 +307,14 @@ jobs:
             echo "Generating changelog from $PREV_TAG to ${{ steps.version.outputs.VERSION }}"
             CHANGELOG=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD)
           else
-            echo "No previous tag found, generating full changelog"
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" HEAD~10..HEAD)
+            echo "No previous tag found, generating changelog from all commits"
+            # Use --no-walk=unsorted to handle repos with few commits
+            COMMIT_COUNT=$(git rev-list --count HEAD)
+            if [ "$COMMIT_COUNT" -gt 10 ]; then
+              CHANGELOG=$(git log --pretty=format:"- %s (%h)" -n 10)
+            else
+              CHANGELOG=$(git log --pretty=format:"- %s (%h)")
+            fi
           fi
 
           # Write release notes to file (handles multiline)
