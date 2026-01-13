@@ -232,28 +232,34 @@ If you get CGO-related errors, ensure:
 
 ### Pre-built Images
 
-Official Docker images are available on Docker Hub:
+Docker images are available from GitHub Container Registry:
 
 ```bash
-docker pull tobilg/caddy-duckdb:latest
+# Image URL follows the pattern: ghcr.io/<owner>/<repo>
+# For this repository:
+docker pull ghcr.io/mskyttner/caddy-duckdb-module:latest
 ```
 
 Available tags:
 - `latest` - Latest stable release from main branch
 - `x.y.z` - Specific version (e.g., `1.0.0`)
 - `x.y` - Minor version (e.g., `1.0`)
+- `sha-<commit>` - Specific commit
 
-Supported platforms: `linux/amd64`, `linux/arm64`
+Supported platforms: `linux/amd64`
 
 ### Quick Start with Docker
 
 ```bash
+# Set image name (adjust owner/repo for your fork)
+export IMAGE=ghcr.io/mskyttner/caddy-duckdb-module:latest
+
 # Using pre-built image
 docker run -d \
   --name caddy-duckdb \
   -p 8080:8080 \
   -v $(pwd)/data:/data \
-  tobilg/caddy-duckdb:latest
+  $IMAGE
 
 # Or build locally (~219MB)
 docker build -t caddy-duckdb .
@@ -844,26 +850,27 @@ curl http://localhost:8080/duckdb/openapi.json -o openapi.json
 npx @openapitools/openapi-generator-cli generate -i openapi.json -g python -o ./python-client
 ```
 
-**Integration with Swagger UI:**
+**Swagger UI (Built-in):**
 
-You can serve Swagger UI alongside your API for interactive documentation:
+The Docker image includes Swagger UI for interactive API documentation, available at `/{route-prefix}/docs`:
 
-```caddyfile
-:8080 {
-    # Serve Swagger UI (download swagger-ui-dist to /var/www/swagger)
-    handle /swagger/* {
-        root * /var/www/swagger
-        file_server
-    }
+```bash
+# Access interactive API docs (default route prefix)
+open http://localhost:8080/duckdb/docs
 
-    route /duckdb/* {
-        duckdb {
-            database_path /data/main.db
-            auth_database_path /data/auth.db
-        }
-    }
-}
+# With custom route prefix (e.g., DUCKDB_ROUTE_PREFIX=/api/v1)
+open http://localhost:8080/api/v1/docs
 ```
+
+**Local Development:**
+
+For local development without Docker, download Swagger UI:
+
+```bash
+make swagger-ui    # Downloads to ./swagger-ui-dist
+```
+
+Then configure your Caddyfile to serve it (see `Caddyfile.local` example after running `make swagger-ui`).
 
 ## Example Usage
 
