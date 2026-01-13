@@ -27,7 +27,7 @@ on:
 
 env:
   GO_VERSION: '1.24'
-  DOCKERHUB_IMAGE: tobilg/caddy-duckdb
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
   lint-and-test:
@@ -209,6 +209,9 @@ jobs:
     needs: build
     # Only build Docker on main branch or tags (not PRs or feature branches)
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -219,17 +222,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCKERHUB_IMAGE }}
+          images: ${{ env.IMAGE_NAME }}
           tags: |
             # Set latest tag for main branch
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
@@ -253,7 +257,7 @@ jobs:
 
       - name: Test Docker image
         run: |
-          docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ github.sha }} version || true
+          docker run --rm ${{ env.IMAGE_NAME }}:sha-${{ github.sha }} version || true
 
   release:
     name: Release
@@ -324,7 +328,7 @@ jobs:
           ### Docker Image
 
           \`\`\`bash
-          docker pull ${{ env.DOCKERHUB_IMAGE }}:${GITHUB_REF#refs/tags/v}
+          docker pull ${{ env.IMAGE_NAME }}:${GITHUB_REF#refs/tags/v}
           \`\`\`
 
           Available for \`linux/amd64\` and \`linux/arm64\`.
@@ -352,7 +356,7 @@ jobs:
 
           **Docker (recommended):**
           \`\`\`bash
-          docker run -p 8080:8080 -v \$(pwd)/data:/data ${{ env.DOCKERHUB_IMAGE }}:${GITHUB_REF#refs/tags/v}
+          docker run -p 8080:8080 -v \$(pwd)/data:/data ${{ env.IMAGE_NAME }}:${GITHUB_REF#refs/tags/v}
           \`\`\`
 
           **Binary:**
@@ -365,7 +369,7 @@ jobs:
           caddy-duckdb-windows-amd64.exe version
           \`\`\`
 
-          See the [README](https://github.com/tobilg/caddy-duckdb-module#readme) for configuration and usage instructions.
+          See the [README](https://github.com/${{ github.repository }}#readme) for configuration and usage instructions.
           EOF
 
       - name: Create GitHub Release
