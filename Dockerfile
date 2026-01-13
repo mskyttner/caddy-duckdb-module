@@ -45,9 +45,12 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o caddy ./cmd/caddy
 # =============================================================================
 FROM debian:bookworm-slim
 
+# Swagger UI version to download (can be overridden at build time)
+ARG SWAGGER_UI_VERSION=5.18.2
+
 # Install minimal runtime dependencies
 # - ca-certificates: Required for HTTPS/TLS connections
-# - curl: Required for health checks (smaller than wget)
+# - curl: Required for health checks and downloading Swagger UI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -57,10 +60,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd -r caddy && useradd -r -g caddy caddy
 
 # Create directories with correct ownership upfront
-RUN mkdir -p /data /app /etc/caddy && \
+RUN mkdir -p /data /app /etc/caddy /app/swagger-ui-dist && \
     chown -R caddy:caddy /data /app /etc/caddy
 
 WORKDIR /app
+
+# Download Swagger UI dist files from unpkg (npm CDN)
+RUN cd /app/swagger-ui-dist && \
+    for file in swagger-ui-bundle.js swagger-ui-standalone-preset.js swagger-ui.css \
+                index.html swagger-initializer.js oauth2-redirect.html \
+                favicon-16x16.png favicon-32x32.png; do \
+        curl -fsSL "https://unpkg.com/swagger-ui-dist@${SWAGGER_UI_VERSION}/${file}" -o "${file}"; \
+    done && \
+    # Configure Swagger UI to use relative path (works with any route prefix)
+    # From /duckdb/docs/, ../openapi.json resolves to /duckdb/openapi.json
+    sed -i 's|https://petstore.swagger.io/v2/swagger.json|../openapi.json|g' swagger-initializer.js && \
+    chown -R caddy:caddy /app/swagger-ui-dist
 
 # Copy binary from builder with correct ownership (avoids layer duplication)
 COPY --from=builder --chown=caddy:caddy /build/caddy .

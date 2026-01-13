@@ -59,3 +59,9 @@ tools/auth-db
 CLAUDE.md
 
 docs/
+
+# Local configuration files
+Caddyfile.local
+
+# Swagger UI (downloaded via make swagger-ui or during Docker build)
+swagger-ui-dist/

@@ -20,7 +20,7 @@ services:
       # Local data directory - must contain initialized auth.db
       - ./data:/data
       # Mount Caddyfile for easy config changes without rebuild
-      - ./examples/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./examples/Caddyfile.docker:/etc/caddy/Caddyfile:ro
     # Higher resource limits for development
     deploy:
       resources:

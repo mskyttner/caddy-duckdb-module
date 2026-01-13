@@ -8,6 +8,8 @@ BINARY_NAME := caddy
 TOOLS_DIR := tools
 DATA_DIR := /tmp/data
 AUTH_DB := $(DATA_DIR)/auth.db
+SWAGGER_UI_VERSION := 5.18.2
+SWAGGER_UI_DIR := swagger-ui-dist
 
 # Enable CGO for DuckDB bindings
 export CGO_ENABLED := 1
@@ -19,7 +21,8 @@ RED := \033[0;31m
 NC := \033[0m # No Color
 
 .PHONY: all build build-tools test test-verbose run run-json setup clean deps tidy fmt vet lint install-hooks help \
-	auth-init auth-add-key auth-remove-key auth-list-keys auth-list-roles auth-list-perms auth-info auth-add-role auth-remove-role auth-add-perm auth-remove-perm
+	auth-init auth-add-key auth-remove-key auth-list-keys auth-list-roles auth-list-perms auth-info auth-add-role auth-remove-role auth-add-perm auth-remove-perm \
+	swagger-ui swagger-ui-clean
 
 # Default target
 all: help
@@ -72,6 +75,27 @@ init-dirs: ## Create required data directories
 	@echo "$(GREEN)Creating data directories...$(NC)"
 	@mkdir -p $(DATA_DIR)
 	@echo "$(GREEN)✓ Created $(DATA_DIR)$(NC)"
+
+## Swagger UI targets
+
+swagger-ui: ## Download Swagger UI dist files for local development
+	@echo "$(GREEN)Downloading Swagger UI v$(SWAGGER_UI_VERSION)...$(NC)"
+	@mkdir -p $(SWAGGER_UI_DIR)
+	@for file in swagger-ui-bundle.js swagger-ui-standalone-preset.js swagger-ui.css \
+	             index.html swagger-initializer.js oauth2-redirect.html \
+	             favicon-16x16.png favicon-32x32.png; do \
+		echo "  Downloading $$file..."; \
+		curl -fsSL "https://unpkg.com/swagger-ui-dist@$(SWAGGER_UI_VERSION)/$$file" -o "$(SWAGGER_UI_DIR)/$$file"; \
+	done
+	@# Configure Swagger UI to use relative path (works with any route prefix)
+	@# From /duckdb/docs/, ../openapi.json resolves to /duckdb/openapi.json
+	@sed -i 's|https://petstore.swagger.io/v2/swagger.json|../openapi.json|g' $(SWAGGER_UI_DIR)/swagger-initializer.js
+	@echo "$(GREEN)✓ Swagger UI downloaded to $(SWAGGER_UI_DIR)/$(NC)"
+
+swagger-ui-clean: ## Remove downloaded Swagger UI files
+	@echo "$(YELLOW)Removing Swagger UI files...$(NC)"
+	@rm -rf $(SWAGGER_UI_DIR)
+	@echo "$(GREEN)✓ Swagger UI removed$(NC)"
 
 ## Auth database management targets
 
