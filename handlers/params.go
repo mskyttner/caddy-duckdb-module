@@ -204,11 +204,27 @@ func ParseLinks(r *http.Request) bool {
 	return links == "true" || links == "1"
 }
 
-// GetAcceptFormat returns the preferred response format based on Accept header.
+// GetAcceptFormat returns the preferred response format based on query parameter,
+// X-ClickHouse-Format header, or Accept header (in that order of precedence).
+// Supported formats:
+//   - json, JSONEachRow: array of objects (default)
+//   - compact, JSONCompact: array of arrays with meta (httpserver compatible)
+//   - meta: array of objects with meta and statistics
+//   - csv, parquet, arrow: binary formats
 func GetAcceptFormat(r *http.Request) string {
+	// Check query parameter first (highest precedence, httpserver compatible)
+	if format := r.URL.Query().Get("default_format"); format != "" {
+		return format
+	}
+
+	// Check X-ClickHouse-Format header (httpserver compatible)
+	if format := r.Header.Get("X-ClickHouse-Format"); format != "" {
+		return format
+	}
+
+	// Check Accept header
 	accept := r.Header.Get("Accept")
 
-	// Check for specific formats
 	if strings.Contains(accept, "text/csv") {
 		return "csv"
 	}
@@ -219,7 +235,7 @@ func GetAcceptFormat(r *http.Request) string {
 		return "arrow"
 	}
 
-	// Default to JSON
+	// Default to JSON objects format
 	return "json"
 }
 
@@ -301,14 +317,18 @@ func ParseGETQueryPath(path string) (string, string, error) {
 
 	// Validate format
 	validFormats := map[string]bool{
-		"json":    true,
-		"csv":     true,
-		"arrow":   true,
-		"parquet": true,
+		"json":        true,
+		"compact":     true,
+		"meta":        true,
+		"csv":         true,
+		"arrow":       true,
+		"parquet":     true,
+		"JSONCompact": true,
+		"JSONEachRow": true,
 	}
 
 	if !validFormats[format] {
-		return "", "", fmt.Errorf("invalid format: %s (must be json, csv, arrow, or parquet)", format)
+		return "", "", fmt.Errorf("invalid format: %s (must be json, compact, meta, csv, arrow, or parquet)", format)
 	}
 
 	return decodedSQL, format, nil

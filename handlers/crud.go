@@ -70,6 +70,8 @@ func (h *CRUDHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Route based on HTTP method
 	switch r.Method {
+	case http.MethodHead:
+		h.handleHead(w, r, tableName)
 	case http.MethodPost:
 		h.handleCreate(w, r, tableName)
 	case http.MethodGet:
@@ -81,6 +83,39 @@ func (h *CRUDHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.sendErrorWithRequest(w, r, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleHead handles HEAD requests - returns headers only without body.
+// Useful for clients to check table existence and expected content type.
+func (h *CRUDHandler) handleHead(w http.ResponseWriter, r *http.Request, tableName string) {
+	requestID := auth.GetRequestIDFromContext(r.Context())
+
+	// Check authorization for read
+	role := auth.GetRoleFromContext(r.Context())
+	allowed, err := h.authorizer.CheckPermission(role, tableName, auth.OperationRead)
+	if err != nil {
+		h.logger.Error("Failed to check permission", zap.Error(err), zap.String("request_id", requestID))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	// Set Content-Type based on requested format
+	format := GetAcceptFormat(r)
+	switch format {
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv")
+	case "parquet":
+		w.Header().Set("Content-Type", "application/parquet")
+	case "arrow":
+		w.Header().Set("Content-Type", "application/vnd.apache.arrow.stream")
+	default:
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleCreate handles INSERT operations.
