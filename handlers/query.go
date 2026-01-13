@@ -55,6 +55,13 @@ func (h *QueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Handle different HTTP methods
 	switch r.Method {
+	case http.MethodHead:
+		// HEAD request - return headers only without executing query
+		// Useful for clients to check endpoint availability and content type
+		format = GetAcceptFormat(r)
+		h.sendHeadResponse(w, format)
+		return
+
 	case http.MethodPost:
 		// POST request with JSON body
 		defer r.Body.Close()
@@ -117,7 +124,7 @@ func (h *QueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.isSelectQuery(sqlQuery) {
 		// Read-only query - use QueryMain for better concurrency (no transaction overhead)
 		rows, err := h.dbMgr.QueryMain(sqlQuery, params...)
-		_ = time.Since(startTime) // execution time tracked but not used in response
+		executionTime := time.Since(startTime)
 
 		if err != nil {
 			h.logger.Error("Failed to execute query", zap.Error(err), zap.String("sql", sqlQuery), zap.String("request_id", requestID))
@@ -126,8 +133,8 @@ func (h *QueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rows.Close()
 
-		// Format and return results (same format as /api endpoint)
-		if err := h.formatQueryResponse(w, rows, format); err != nil {
+		// Format and return results
+		if err := h.formatQueryResponse(w, rows, format, executionTime); err != nil {
 			h.logger.Error("Failed to format response", zap.Error(err), zap.String("request_id", requestID))
 			h.sendErrorWithRequest(w, r, "Failed to format response", http.StatusInternalServerError)
 		}
@@ -155,20 +162,30 @@ func (h *QueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // formatQueryResponse formats the query result.
-// Uses the same JSON format as the CRUD /api endpoint for consistency.
-func (h *QueryHandler) formatQueryResponse(w http.ResponseWriter, rows *sql.Rows, format string) error {
+// Supports multiple JSON formats for compatibility with different clients.
+// Format options:
+//   - "json" or "JSONEachRow": array of objects (default, backwards compatible)
+//   - "compact" or "JSONCompact": array of arrays with meta (httpserver compatible)
+//   - "meta": array of objects with meta and statistics
+func (h *QueryHandler) formatQueryResponse(w http.ResponseWriter, rows *sql.Rows, format string, executionTime time.Duration) error {
 	switch format {
 	case "csv":
 		return formats.WriteCSV(w, rows)
-	case "json":
-		// Use same format as /api endpoint: data as array of objects, no pagination
+	case "compact", "JSONCompact":
+		// httpserver compatible format: meta + data as arrays + statistics
+		return formats.WriteJSONCompact(w, rows, executionTime)
+	case "meta":
+		// JSON objects with meta and statistics
+		return formats.WriteJSONWithMeta(w, rows, executionTime)
+	case "json", "JSONEachRow":
+		// Default: array of objects, no pagination (backwards compatible)
 		return formats.WriteJSON(w, rows, 1, 0, 0, false, 0, nil)
 	case "parquet":
 		return formats.WriteParquet(w, rows)
 	case "arrow":
 		return formats.WriteArrowIPC(w, rows)
 	default:
-		// Use same format as /api endpoint: data as array of objects, no pagination
+		// Default to JSON objects format
 		return formats.WriteJSON(w, rows, 1, 0, 0, false, 0, nil)
 	}
 }
@@ -195,6 +212,23 @@ func (h *QueryHandler) sendErrorWithRequest(w http.ResponseWriter, r *http.Reque
 		"message": message,
 		"code":    statusCode,
 	})
+}
+
+// sendHeadResponse sends headers for HEAD requests without body.
+// Returns Content-Type based on requested format.
+func (h *QueryHandler) sendHeadResponse(w http.ResponseWriter, format string) {
+	switch format {
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv")
+	case "parquet":
+		w.Header().Set("Content-Type", "application/parquet")
+	case "arrow":
+		w.Header().Set("Content-Type", "application/vnd.apache.arrow.stream")
+	default:
+		// json, compact, meta, JSONCompact, JSONEachRow all return JSON
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // isSelectQuery checks if the SQL query is a SELECT query.
