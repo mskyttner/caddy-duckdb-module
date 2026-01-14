@@ -21,6 +21,7 @@ type Config struct {
 	EnableObjectCache bool
 	TempDirectory     string
 	QueryTimeout      time.Duration
+	InitFilePath      string // Path to SQL file to execute on startup
 	Logger            *zap.Logger
 }
 
@@ -92,6 +93,14 @@ func NewManager(cfg Config) (*Manager, error) {
 		zap.Int("max_open_conns", cfg.Threads*2),
 		zap.Int("max_idle_conns", cfg.Threads),
 	)
+
+	// Execute init file if specified
+	if cfg.InitFilePath != "" {
+		if err := mgr.loadInitFile(cfg.InitFilePath); err != nil {
+			mgr.mainDB.Close()
+			return nil, fmt.Errorf("failed to execute init file: %w", err)
+		}
+	}
 
 	// Initialize auth database (always file-based)
 	authDSN := fmt.Sprintf("%s?threads=%d", cfg.AuthDBPath, cfg.Threads)
