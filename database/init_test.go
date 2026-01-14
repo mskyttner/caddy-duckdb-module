@@ -36,8 +36,8 @@ func TestParseSQL(t *testing.T) {
 			expected: []string{"SELECT 1", "SELECT 2", "SELECT 3"},
 		},
 		{
-			name:  "multiline statement",
-			input: "SELECT\n  id,\n  name\nFROM users;",
+			name:     "multiline statement",
+			input:    "SELECT\n  id,\n  name\nFROM users;",
 			expected: []string{"SELECT\n  id,\n  name\nFROM users"},
 		},
 		{
