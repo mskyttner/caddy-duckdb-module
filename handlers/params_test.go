@@ -238,8 +238,20 @@ func TestParseFilters(t *testing.T) {
 			},
 		},
 		{
-			name:      "invalid format - missing parts",
+			name:      "two parts now valid as simplified format",
 			query:     "filter=name:eq",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				// "name:eq" is now parsed as simplified: column=name, value=eq (with implicit eq operator)
+				if column != "name" || operator != "eq" || value != "eq" {
+					t.Errorf("expected name eq eq, got %s %s %v", column, operator, value)
+				}
+			},
+		},
+		{
+			name:      "invalid format - single part",
+			query:     "filter=name",
 			wantCount: 0,
 			wantErr:   true,
 		},
@@ -257,6 +269,90 @@ func TestParseFilters(t *testing.T) {
 			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
 				if value != "12:30:00" {
 					t.Errorf("expected value '12:30:00', got '%v'", value)
+				}
+			},
+		},
+		// Simplified operator tests
+		{
+			name:      "simplified gt operator",
+			query:     "filter=age:>18",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if column != "age" || operator != "gt" || value != "18" {
+					t.Errorf("expected age gt 18, got %s %s %v", column, operator, value)
+				}
+			},
+		},
+		{
+			name:      "simplified lt operator",
+			query:     "filter=price:<100",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if operator != "lt" || value != "100" {
+					t.Errorf("expected lt 100, got %s %v", operator, value)
+				}
+			},
+		},
+		{
+			name:      "simplified gte operator",
+			query:     "filter=score:>=90",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if operator != "gte" || value != "90" {
+					t.Errorf("expected gte 90, got %s %v", operator, value)
+				}
+			},
+		},
+		{
+			name:      "simplified lte operator",
+			query:     "filter=count:<=10",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if operator != "lte" || value != "10" {
+					t.Errorf("expected lte 10, got %s %v", operator, value)
+				}
+			},
+		},
+		{
+			name:      "simplified ne operator",
+			query:     "filter=status:!deleted",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if operator != "ne" || value != "deleted" {
+					t.Errorf("expected ne deleted, got %s %v", operator, value)
+				}
+			},
+		},
+		{
+			name:      "simplified eq operator (no prefix)",
+			query:     "filter=name:John",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if operator != "eq" || value != "John" {
+					t.Errorf("expected eq John, got %s %v", operator, value)
+				}
+			},
+		},
+		{
+			name:      "mixed simplified and standard formats",
+			query:     "filter=age:>18,status:eq:active,score:>=90",
+			wantCount: 3,
+			wantErr:   false,
+		},
+		{
+			name:      "backwards compatible - standard format still works",
+			query:     "filter=age:gt:30",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if column != "age" || operator != "gt" || value != "30" {
+					t.Errorf("expected age gt 30, got %s %s %v", column, operator, value)
 				}
 			},
 		},
@@ -426,7 +522,7 @@ func TestParseWhereClause(t *testing.T) {
 			},
 		},
 		{
-			name:      "invalid format",
+			name:      "invalid format - single part",
 			query:     "where=invalid",
 			wantCount: 0,
 			wantErr:   true,
@@ -436,6 +532,35 @@ func TestParseWhereClause(t *testing.T) {
 			query:     "where=name:contains:test",
 			wantCount: 0,
 			wantErr:   true,
+		},
+		// Simplified operator tests for where clause
+		{
+			name:      "simplified gt operator in where",
+			query:     "where=id:>100",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if column != "id" || operator != "gt" || value != "100" {
+					t.Errorf("expected id gt 100, got %s %s %v", column, operator, value)
+				}
+			},
+		},
+		{
+			name:      "simplified ne operator in where",
+			query:     "where=status:!deleted",
+			wantCount: 1,
+			wantErr:   false,
+			checkFirst: func(t *testing.T, column, operator string, value interface{}) {
+				if operator != "ne" || value != "deleted" {
+					t.Errorf("expected ne deleted, got %s %v", operator, value)
+				}
+			},
+		},
+		{
+			name:      "mixed simplified and standard in where",
+			query:     "where=id:>100,status:eq:active",
+			wantCount: 2,
+			wantErr:   false,
 		},
 	}
 
@@ -502,6 +627,162 @@ func TestParseLinks(t *testing.T) {
 			req := httptest.NewRequest("GET", "/?"+tt.query, nil)
 			if got := ParseLinks(req); got != tt.want {
 				t.Errorf("ParseLinks() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSelectColumns(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		wantColumns []string
+		wantErr     bool
+	}{
+		{
+			name:        "no select param",
+			query:       "",
+			wantColumns: nil,
+			wantErr:     false,
+		},
+		{
+			name:        "single column",
+			query:       "select=id",
+			wantColumns: []string{"id"},
+			wantErr:     false,
+		},
+		{
+			name:        "multiple columns",
+			query:       "select=id,name,email",
+			wantColumns: []string{"id", "name", "email"},
+			wantErr:     false,
+		},
+		{
+			name:        "columns with spaces",
+			query:       "select=id,%20name%20,%20email",
+			wantColumns: []string{"id", "name", "email"},
+			wantErr:     false,
+		},
+		{
+			name:        "columns with underscores",
+			query:       "select=first_name,last_name,created_at",
+			wantColumns: []string{"first_name", "last_name", "created_at"},
+			wantErr:     false,
+		},
+		{
+			name:        "invalid column name with dash",
+			query:       "select=first-name",
+			wantColumns: nil,
+			wantErr:     true,
+		},
+		{
+			name:        "invalid column name with special chars",
+			query:       "select=name%3BDROP",
+			wantColumns: nil,
+			wantErr:     true,
+		},
+		{
+			name:        "empty select value returns nil",
+			query:       "select=",
+			wantColumns: nil,
+			wantErr:     false, // empty string returns nil, nil (treated as no select param)
+		},
+		{
+			name:        "empty columns after split",
+			query:       "select=,,,",
+			wantColumns: nil,
+			wantErr:     true,
+		},
+		{
+			name:        "mixed valid and empty",
+			query:       "select=id,,name",
+			wantColumns: []string{"id", "name"},
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/?"+tt.query, nil)
+			columns, err := ParseSelectColumns(req)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseSelectColumns() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr {
+				if len(columns) != len(tt.wantColumns) {
+					t.Errorf("ParseSelectColumns() columns count = %v, want %v", len(columns), len(tt.wantColumns))
+					return
+				}
+				for i, col := range columns {
+					if col != tt.wantColumns[i] {
+						t.Errorf("ParseSelectColumns() column[%d] = %v, want %v", i, col, tt.wantColumns[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestParseGroupBy(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "no group_by param",
+			query:   "",
+			want:    "",
+			wantErr: false,
+		},
+		{
+			name:    "valid column",
+			query:   "group_by=status",
+			want:    "status",
+			wantErr: false,
+		},
+		{
+			name:    "valid column with underscore",
+			query:   "group_by=created_year",
+			want:    "created_year",
+			wantErr: false,
+		},
+		{
+			name:    "column with spaces trimmed",
+			query:   "group_by=%20status%20",
+			want:    "status",
+			wantErr: false,
+		},
+		{
+			name:    "invalid column with dash",
+			query:   "group_by=status-code",
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "invalid column with special chars",
+			query:   "group_by=status%3BDROP",
+			want:    "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/?"+tt.query, nil)
+			got, err := ParseGroupBy(req)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseGroupBy() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("ParseGroupBy() = %v, want %v", got, tt.want)
 			}
 		})
 	}

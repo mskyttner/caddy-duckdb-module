@@ -54,9 +54,33 @@ func ParsePagination(r *http.Request, maxRowsPerPage int, absoluteMaxRows int) (
 	return limit, offset, page, paginationRequested
 }
 
+// parseSimplifiedOperator parses simplified operator syntax (e.g., ">30", "!deleted")
+// and returns the standard operator and value.
+// Mapping: >= → gte, <= → lte, > → gt, < → lt, ! → ne, none → eq
+func parseSimplifiedOperator(operatorValue string) (operator, value string) {
+	switch {
+	case strings.HasPrefix(operatorValue, ">="):
+		return "gte", operatorValue[2:]
+	case strings.HasPrefix(operatorValue, "<="):
+		return "lte", operatorValue[2:]
+	case strings.HasPrefix(operatorValue, ">"):
+		return "gt", operatorValue[1:]
+	case strings.HasPrefix(operatorValue, "<"):
+		return "lt", operatorValue[1:]
+	case strings.HasPrefix(operatorValue, "!"):
+		return "ne", operatorValue[1:]
+	default:
+		return "eq", operatorValue
+	}
+}
+
 // ParseFilters parses filter parameters from the request.
-// Format: filter=column:operator:value,column2:operator2:value2
-// Example: filter=age:gt:18,status:eq:active
+// Supports two formats:
+//   - Standard: filter=column:operator:value (e.g., age:gt:18)
+//   - Simplified: filter=column:value (e.g., age:>18, status:!deleted)
+//
+// Simplified operators: > (gt), < (lt), >= (gte), <= (lte), ! (ne), none (eq)
+// Example: filter=age:gt:18,status:eq:active OR filter=age:>18,status:active
 func ParseFilters(r *http.Request) ([]database.Filter, error) {
 	filterStr := r.URL.Query().Get("filter")
 	if filterStr == "" {
@@ -66,23 +90,32 @@ func ParseFilters(r *http.Request) ([]database.Filter, error) {
 	filterParts := strings.Split(filterStr, ",")
 	filters := make([]database.Filter, 0, len(filterParts))
 
+	// Valid operators for standard format
+	validOperators := map[string]bool{
+		"eq": true, "ne": true, "gt": true, "gte": true,
+		"lt": true, "lte": true, "like": true, "in": true,
+	}
+
 	for _, part := range filterParts {
 		components := strings.SplitN(part, ":", 3)
-		if len(components) != 3 {
-			return nil, fmt.Errorf("invalid filter format: %s (expected column:operator:value)", part)
-		}
 
-		column := strings.TrimSpace(components[0])
-		operator := strings.TrimSpace(components[1])
-		value := components[2]
+		var column, operator, value string
 
-		// Validate operator
-		validOperators := map[string]bool{
-			"eq": true, "ne": true, "gt": true, "gte": true,
-			"lt": true, "lte": true, "like": true, "in": true,
-		}
-		if !validOperators[operator] {
-			return nil, fmt.Errorf("invalid operator: %s", operator)
+		if len(components) == 3 {
+			// Standard format: column:operator:value
+			column = strings.TrimSpace(components[0])
+			operator = strings.TrimSpace(components[1])
+			value = components[2]
+
+			if !validOperators[operator] {
+				return nil, fmt.Errorf("invalid operator: %s", operator)
+			}
+		} else if len(components) == 2 {
+			// Simplified format: column:value (with optional operator prefix)
+			column = strings.TrimSpace(components[0])
+			operator, value = parseSimplifiedOperator(components[1])
+		} else {
+			return nil, fmt.Errorf("invalid filter format: %s (expected column:operator:value or column:value)", part)
 		}
 
 		// Parse value based on operator
@@ -140,8 +173,11 @@ func ParseSorts(r *http.Request) ([]database.Sort, error) {
 }
 
 // ParseWhereClause parses WHERE clause from query parameters.
-// Format: where=column:operator:value,column2:operator2:value2
-// Example: where=id:eq:123,status:ne:deleted
+// Supports two formats:
+//   - Standard: where=column:operator:value (e.g., id:eq:123)
+//   - Simplified: where=column:value (e.g., id:>100, status:!deleted)
+//
+// Example: where=id:eq:123,status:ne:deleted OR where=id:>100,status:!deleted
 // Supports all the same operators as filter: eq, ne, gt, gte, lt, lte, like, in
 func ParseWhereClause(r *http.Request) ([]database.Filter, error) {
 	whereStr := r.URL.Query().Get("where")
@@ -152,23 +188,32 @@ func ParseWhereClause(r *http.Request) ([]database.Filter, error) {
 	whereParts := strings.Split(whereStr, ",")
 	filters := make([]database.Filter, 0, len(whereParts))
 
+	// Valid operators for standard format
+	validOperators := map[string]bool{
+		"eq": true, "ne": true, "gt": true, "gte": true,
+		"lt": true, "lte": true, "like": true, "in": true,
+	}
+
 	for _, part := range whereParts {
 		components := strings.SplitN(part, ":", 3)
-		if len(components) != 3 {
-			return nil, fmt.Errorf("invalid where format: %s (expected column:operator:value)", part)
-		}
 
-		column := strings.TrimSpace(components[0])
-		operator := strings.TrimSpace(components[1])
-		value := components[2]
+		var column, operator, value string
 
-		// Validate operator - same operators as filter
-		validOperators := map[string]bool{
-			"eq": true, "ne": true, "gt": true, "gte": true,
-			"lt": true, "lte": true, "like": true, "in": true,
-		}
-		if !validOperators[operator] {
-			return nil, fmt.Errorf("invalid operator in where clause: %s (supported: eq, ne, gt, gte, lt, lte, like, in)", operator)
+		if len(components) == 3 {
+			// Standard format: column:operator:value
+			column = strings.TrimSpace(components[0])
+			operator = strings.TrimSpace(components[1])
+			value = components[2]
+
+			if !validOperators[operator] {
+				return nil, fmt.Errorf("invalid operator in where clause: %s (supported: eq, ne, gt, gte, lt, lte, like, in)", operator)
+			}
+		} else if len(components) == 2 {
+			// Simplified format: column:value (with optional operator prefix)
+			column = strings.TrimSpace(components[0])
+			operator, value = parseSimplifiedOperator(components[1])
+		} else {
+			return nil, fmt.Errorf("invalid where format: %s (expected column:operator:value or column:value)", part)
 		}
 
 		// Parse value based on operator
@@ -195,6 +240,58 @@ func ParseWhereClause(r *http.Request) ([]database.Filter, error) {
 func ParseDryRun(r *http.Request) bool {
 	dryRun := r.URL.Query().Get("dry_run")
 	return dryRun == "true" || dryRun == "1"
+}
+
+// ParseGroupBy parses the group_by parameter from the request.
+// Returns the column name to group by, or empty string if not specified.
+func ParseGroupBy(r *http.Request) (string, error) {
+	groupBy := r.URL.Query().Get("group_by")
+	if groupBy == "" {
+		return "", nil
+	}
+
+	// Trim whitespace
+	groupBy = strings.TrimSpace(groupBy)
+
+	// Validate column name
+	if err := SanitizeColumnName(groupBy); err != nil {
+		return "", fmt.Errorf("invalid group_by column: %s", err.Error())
+	}
+
+	return groupBy, nil
+}
+
+// ParseSelectColumns parses the select parameter to get requested columns.
+// Format: select=col1,col2,col3
+// Returns nil if no select parameter is provided (meaning SELECT *).
+func ParseSelectColumns(r *http.Request) ([]string, error) {
+	selectStr := r.URL.Query().Get("select")
+	if selectStr == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(selectStr, ",")
+	columns := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		col := strings.TrimSpace(part)
+		if col == "" {
+			continue
+		}
+
+		// Validate column name
+		if err := SanitizeColumnName(col); err != nil {
+			return nil, fmt.Errorf("invalid column in select: %s", err.Error())
+		}
+
+		columns = append(columns, col)
+	}
+
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("select parameter cannot be empty")
+	}
+
+	return columns, nil
 }
 
 // ParseLinks checks if links parameter is set to true.

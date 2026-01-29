@@ -177,7 +177,7 @@ func TestSelect(t *testing.T) {
 	}
 
 	// Test select with no filters
-	rows, err := mgr.Select("test_users", nil, nil, 0, 0)
+	rows, err := mgr.Select("test_users", nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("Select failed: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestSelectWithFilters(t *testing.T) {
 		{Column: "age", Operator: "gte", Value: 30},
 	}
 
-	rows, err := mgr.Select("test_users", filters, nil, 0, 0)
+	rows, err := mgr.Select("test_users", nil, filters, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("Select with filter failed: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestSelectWithPagination(t *testing.T) {
 	}
 
 	// Test with limit
-	rows, err := mgr.Select("test_users", nil, nil, 5, 0)
+	rows, err := mgr.Select("test_users", nil, nil, nil, 5, 0)
 	if err != nil {
 		t.Fatalf("Select with limit failed: %v", err)
 	}

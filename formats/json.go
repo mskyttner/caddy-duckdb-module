@@ -306,6 +306,131 @@ func WriteJSONWithMeta(w http.ResponseWriter, rows *sql.Rows, executionTime time
 	return json.NewEncoder(w).Encode(response)
 }
 
+// GroupByResult represents a single group in aggregation results.
+// This matches database.GroupByResult for JSON serialization.
+type GroupByResult struct {
+	Key            interface{} `json:"key"`
+	KeyDisplayName string      `json:"key_display_name"`
+	Count          int64       `json:"count"`
+}
+
+// CursorMeta contains metadata for cursor-based pagination responses.
+type CursorMeta struct {
+	Count      int    `json:"count"`
+	NextCursor string `json:"next_cursor,omitempty"`
+	PerPage    int    `json:"per_page"`
+}
+
+// CursorResultCollector collects results and builds cursor metadata.
+type CursorResultCollector struct {
+	Data         []map[string]interface{}
+	SortColumns  []string
+	LastRowIndex int
+	HasMore      bool
+}
+
+// WriteJSONWithCursor writes query results with cursor-based pagination.
+// The rows should include one extra row to detect if there are more results.
+func WriteJSONWithCursor(w http.ResponseWriter, rows *sql.Rows, limit int, sortColumns []string, sortDirections []string, buildCursorFn func(sortCols, sortDirs []string, lastValues []interface{}, offset int) (string, error)) error {
+	// Get column names
+	columns, err := rows.Columns()
+	if err != nil {
+		return fmt.Errorf("failed to get columns: %w", err)
+	}
+
+	// Prepare data structure
+	data := make([]map[string]interface{}, 0)
+	rowCount := 0
+	var lastRow map[string]interface{}
+
+	// Scan rows (including the extra row to detect more)
+	for rows.Next() {
+		rowCount++
+
+		// Create a slice of interface{} to hold each column
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range columns {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		// Create a map for this row
+		rowMap := make(map[string]interface{})
+		for i, col := range columns {
+			val := values[i]
+
+			// Handle NULL values and byte arrays
+			switch v := val.(type) {
+			case nil:
+				rowMap[col] = nil
+			case []byte:
+				rowMap[col] = string(v)
+			default:
+				rowMap[col] = v
+			}
+		}
+
+		// Only add to data if within limit
+		if rowCount <= limit {
+			data = append(data, rowMap)
+			lastRow = rowMap
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating rows: %w", err)
+	}
+
+	// Determine if there are more results
+	hasMore := rowCount > limit
+
+	// Build meta
+	meta := CursorMeta{
+		Count:   len(data),
+		PerPage: limit,
+	}
+
+	// Build next cursor if there are more results and we have sort columns
+	if hasMore && len(sortColumns) > 0 && lastRow != nil && buildCursorFn != nil {
+		// Extract sort column values from last row
+		lastValues := make([]interface{}, len(sortColumns))
+		for i, col := range sortColumns {
+			lastValues[i] = lastRow[col]
+		}
+
+		nextCursor, err := buildCursorFn(sortColumns, sortDirections, lastValues, 0)
+		if err == nil {
+			meta.NextCursor = nextCursor
+		}
+	}
+
+	// Build response
+	response := map[string]interface{}{
+		"data": data,
+		"meta": meta,
+	}
+
+	// Write response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	return json.NewEncoder(w).Encode(response)
+}
+
+// WriteGroupByJSON writes group by results as JSON.
+func WriteGroupByJSON(w http.ResponseWriter, results []GroupByResult) error {
+	response := map[string]interface{}{
+		"group_by": results,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	return json.NewEncoder(w).Encode(response)
+}
+
 // generateHATEOASLinks generates navigation links for paginated responses.
 func generateHATEOASLinks(basePath string, query url.Values, page, limit, totalPages int) map[string]string {
 	links := make(map[string]string)
