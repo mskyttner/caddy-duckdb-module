@@ -79,6 +79,8 @@ type DuckDB struct {
 	crudHandler    *handlers.CRUDHandler
 	queryHandler   *handlers.QueryHandler
 	openAPIHandler *handlers.OpenAPIHandler
+	macroHandler   *handlers.MacroHandler
+	viewHandler    *handlers.ViewHandler
 	routePrefix    string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
 }
 
@@ -161,6 +163,8 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	d.crudHandler = handlers.NewCRUDHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
 	d.queryHandler = handlers.NewQueryHandler(d.dbMgr, d.authorizer, d.logger)
 	d.openAPIHandler = handlers.NewOpenAPIHandler()
+	d.macroHandler = handlers.NewMacroHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
+	d.viewHandler = handlers.NewViewHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
 
 	d.logger.Info("DuckDB module provisioned",
 		zap.String("route_prefix", d.routePrefix),
@@ -251,6 +255,14 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	if strings.HasPrefix(r.URL.Path, d.routePrefix+"/query") {
 		// Raw SQL query endpoint
 		d.queryHandler.ServeHTTP(w, r)
+		return nil
+	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/macro") {
+		// Macro execution endpoint
+		d.macroHandler.ServeHTTP(w, r)
+		return nil
+	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/view") {
+		// View query endpoint
+		d.viewHandler.ServeHTTP(w, r)
 		return nil
 	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/api/") {
 		// CRUD operations endpoint

@@ -66,6 +66,14 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 				"description": "Raw SQL query execution",
 			},
 			{
+				"name":        "Macro",
+				"description": "Execute table macros (api_* prefixed)",
+			},
+			{
+				"name":        "View",
+				"description": "Query views (api_* prefixed)",
+			},
+			{
 				"name":        "OpenAPI",
 				"description": "API documentation",
 			},
@@ -121,6 +129,18 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 		"/query/{sql}/result.{format}": map[string]interface{}{
 			"get": h.generateQueryGetOperation(),
 		},
+		"/macro": map[string]interface{}{
+			"get": h.generateMacroListOperation(),
+		},
+		"/macro/{name}": map[string]interface{}{
+			"get": h.generateMacroExecuteOperation(),
+		},
+		"/view": map[string]interface{}{
+			"get": h.generateViewListOperation(),
+		},
+		"/view/{name}": map[string]interface{}{
+			"get": h.generateViewQueryOperation(),
+		},
 	}
 }
 
@@ -159,11 +179,11 @@ func (h *OpenAPIHandler) generateReadOperation() map[string]interface{} {
 			{
 				"name":        "filter",
 				"in":          "query",
-				"description": "Filter conditions in format: column:operator:value (comma-separated for multiple). Operators: eq, ne, gt, gte, lt, lte, like, in",
+				"description": "Filter conditions. Standard format: column:operator:value. Simplified format: column:>value, column:<value, column:!value. Operators: eq, ne, gt (>), gte (>=), lt (<), lte (<=), like, in. Comma-separated for multiple.",
 				"schema": map[string]interface{}{
 					"type": "string",
 				},
-				"example": "age:gt:18,status:eq:active",
+				"example": "age:>18,status:active",
 			},
 			{
 				"name":        "sort",
@@ -182,6 +202,33 @@ func (h *OpenAPIHandler) generateReadOperation() map[string]interface{} {
 					"type":    "boolean",
 					"default": false,
 				},
+			},
+			{
+				"name":        "select",
+				"in":          "query",
+				"description": "Comma-separated list of columns to return (sparse fieldset). If omitted, all columns are returned.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "id,name,email",
+			},
+			{
+				"name":        "group_by",
+				"in":          "query",
+				"description": "Column to group results by. Returns aggregated counts per unique value instead of individual records.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "status",
+			},
+			{
+				"name":        "cursor",
+				"in":          "query",
+				"description": "Cursor for keyset pagination. Use '*' for initial request, then use next_cursor from response for subsequent pages. More efficient than offset pagination for large datasets.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "*",
 			},
 		},
 		"responses": map[string]interface{}{
@@ -666,6 +713,249 @@ func (h *OpenAPIHandler) generateQueryGetOperation() map[string]interface{} {
 	}
 }
 
+// generateMacroListOperation generates the GET /macro operation spec.
+func (h *OpenAPIHandler) generateMacroListOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Macro"},
+		"summary":     "List available table macros",
+		"description": "Returns a list of available table macros (api_* prefixed only). These are DuckDB table-generating functions that accept parameters.",
+		"operationId": "listMacros",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "List of available macros",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/MacroListResponse",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// generateMacroExecuteOperation generates the GET /macro/{name} operation spec.
+func (h *OpenAPIHandler) generateMacroExecuteOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Macro"},
+		"summary":     "Execute a table macro",
+		"description": "Executes a table macro with the provided parameters. Only api_* prefixed macros are accessible. Parameters are passed as query string arguments.",
+		"operationId": "executeMacro",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "name",
+				"in":          "path",
+				"required":    true,
+				"description": "Name of the macro to execute (must start with api_)",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "api_search_products",
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Macro executed successfully",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ReadResponse",
+						},
+					},
+				},
+			},
+			"400": map[string]interface{}{
+				"description": "Bad request (missing required parameters)",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"404": map[string]interface{}{
+				"description": "Macro not found",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// generateViewListOperation generates the GET /view operation spec.
+func (h *OpenAPIHandler) generateViewListOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"View"},
+		"summary":     "List available views",
+		"description": "Returns a list of available views (api_* prefixed only). Views are pre-defined queries that can be accessed like tables.",
+		"operationId": "listViews",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "List of available views",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ViewListResponse",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// generateViewQueryOperation generates the GET /view/{name} operation spec.
+func (h *OpenAPIHandler) generateViewQueryOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"View"},
+		"summary":     "Query a view",
+		"description": "Queries a view with optional filtering, sorting, and pagination. Only api_* prefixed views are accessible.",
+		"operationId": "queryView",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "name",
+				"in":          "path",
+				"required":    true,
+				"description": "Name of the view to query (must start with api_)",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "api_active_users",
+			},
+			{
+				"name":        "page",
+				"in":          "query",
+				"description": "Page number for pagination (starts at 1)",
+				"schema": map[string]interface{}{
+					"type":    "integer",
+					"minimum": 1,
+					"default": 1,
+				},
+			},
+			{
+				"name":        "limit",
+				"in":          "query",
+				"description": "Number of records per page",
+				"schema": map[string]interface{}{
+					"type":    "integer",
+					"minimum": 1,
+					"maximum": 10000,
+					"default": 100,
+				},
+			},
+			{
+				"name":        "filter",
+				"in":          "query",
+				"description": "Filter conditions. Standard format: column:operator:value. Simplified format: column:>value, column:<value, column:!value.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "email:like:%@gmail.com",
+			},
+			{
+				"name":        "sort",
+				"in":          "query",
+				"description": "Sort order in format: column:direction",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "created_at:desc",
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "View queried successfully",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ReadResponse",
+						},
+					},
+				},
+			},
+			"400": map[string]interface{}{
+				"description": "Bad request",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"404": map[string]interface{}{
+				"description": "View not found",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 // generateComponents generates the components section of the OpenAPI spec.
 func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 	return map[string]interface{}{
@@ -954,6 +1244,129 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"type":        "string",
 						"description": "Unique request identifier for tracing",
 						"example":     "550e8400-e29b-41d4-a716-446655440000",
+					},
+				},
+			},
+			"MacroListResponse": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"macros": map[string]interface{}{
+						"type":        "array",
+						"description": "List of available table macros",
+						"items": map[string]interface{}{
+							"$ref": "#/components/schemas/MacroInfo",
+						},
+					},
+				},
+			},
+			"MacroInfo": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Macro name",
+						"example":     "api_search_products",
+					},
+					"parameters": map[string]interface{}{
+						"type":        "array",
+						"description": "List of parameter names",
+						"items": map[string]interface{}{
+							"type": "string",
+						},
+						"example": []string{"query", "min_price"},
+					},
+				},
+			},
+			"ViewListResponse": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"views": map[string]interface{}{
+						"type":        "array",
+						"description": "List of available views",
+						"items": map[string]interface{}{
+							"$ref": "#/components/schemas/ViewInfo",
+						},
+					},
+				},
+			},
+			"ViewInfo": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "View name",
+						"example":     "api_active_users",
+					},
+				},
+			},
+			"GroupByResponse": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"group_by": map[string]interface{}{
+						"type":        "array",
+						"description": "Aggregated results grouped by the specified column",
+						"items": map[string]interface{}{
+							"$ref": "#/components/schemas/GroupByResult",
+						},
+					},
+				},
+			},
+			"GroupByResult": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key": map[string]interface{}{
+						"description": "The unique value of the grouped column",
+						"oneOf": []map[string]interface{}{
+							{"type": "string"},
+							{"type": "number"},
+							{"type": "boolean"},
+							{"type": "null"},
+						},
+					},
+					"key_display_name": map[string]interface{}{
+						"type":        "string",
+						"description": "Human-readable display name for the key",
+					},
+					"count": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of records with this value",
+						"example":     150,
+					},
+				},
+			},
+			"CursorResponse": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"data": map[string]interface{}{
+						"type":        "array",
+						"description": "Array of records",
+						"items": map[string]interface{}{
+							"type":                 "object",
+							"additionalProperties": true,
+						},
+					},
+					"meta": map[string]interface{}{
+						"$ref": "#/components/schemas/CursorMeta",
+					},
+				},
+			},
+			"CursorMeta": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"count": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of records in this response",
+						"example":     100,
+					},
+					"next_cursor": map[string]interface{}{
+						"type":        "string",
+						"description": "Cursor for fetching the next page. Empty if no more results.",
+						"example":     "eyJzIjpbImlkIl0sInYiOlsxMDBdLCJkIjpbImFzYyJdLCJvIjowfQ==",
+					},
+					"per_page": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of records per page",
+						"example":     100,
 					},
 				},
 			},

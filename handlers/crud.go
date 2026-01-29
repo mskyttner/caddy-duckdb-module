@@ -180,6 +180,24 @@ func (h *CRUDHandler) handleRead(w http.ResponseWriter, r *http.Request, tableNa
 		return
 	}
 
+	// Check for group_by parameter - if present, handle aggregation instead
+	groupBy, err := ParseGroupBy(r)
+	if err != nil {
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid group_by: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+	if groupBy != "" {
+		h.handleGroupBy(w, r, tableName, groupBy)
+		return
+	}
+
+	// Check for cursor pagination
+	cursorStr, isCursorPagination, isInitialCursor := ParseCursorPagination(r)
+	if isCursorPagination {
+		h.handleCursorRead(w, r, tableName, cursorStr, isInitialCursor)
+		return
+	}
+
 	// Parse pagination
 	limit, offset, page, paginationRequested := ParsePagination(r, h.maxRowsPerPage, h.absoluteMaxRows)
 
@@ -187,6 +205,21 @@ func (h *CRUDHandler) handleRead(w http.ResponseWriter, r *http.Request, tableNa
 	safetyLimit := limit
 	if !paginationRequested && h.absoluteMaxRows > 0 {
 		safetyLimit = h.absoluteMaxRows
+	}
+
+	// Parse select columns
+	selectColumns, err := ParseSelectColumns(r)
+	if err != nil {
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid select: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	// Validate select columns exist in table schema
+	if len(selectColumns) > 0 {
+		if err := h.dbMgr.ValidateColumns(tableName, selectColumns); err != nil {
+			h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid select columns: %s", err.Error()), http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Parse filters
@@ -220,7 +253,7 @@ func (h *CRUDHandler) handleRead(w http.ResponseWriter, r *http.Request, tableNa
 	}
 
 	// Execute query with safety limit
-	rows, err := h.dbMgr.Select(tableName, filters, sorts, safetyLimit, offset)
+	rows, err := h.dbMgr.Select(tableName, selectColumns, filters, sorts, safetyLimit, offset)
 	if err != nil {
 		h.logger.Error("Failed to query data", zap.Error(err), zap.String("table", tableName), zap.String("request_id", requestID))
 		h.sendErrorWithRequest(w, r, fmt.Sprintf("Failed to query data: %s", err.Error()), http.StatusInternalServerError)
@@ -254,6 +287,179 @@ func (h *CRUDHandler) handleRead(w http.ResponseWriter, r *http.Request, tableNa
 		h.logger.Error("Failed to format response", zap.Error(err), zap.String("request_id", requestID))
 		h.sendErrorWithRequest(w, r, "Failed to format response", http.StatusInternalServerError)
 	}
+}
+
+// handleGroupBy handles GROUP BY aggregation requests.
+func (h *CRUDHandler) handleGroupBy(w http.ResponseWriter, r *http.Request, tableName, groupByCol string) {
+	requestID := auth.GetRequestIDFromContext(r.Context())
+
+	// Validate group_by column exists in table
+	if err := h.dbMgr.ValidateColumns(tableName, []string{groupByCol}); err != nil {
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid group_by column: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	// Parse filters
+	filters, err := ParseFilters(r)
+	if err != nil {
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid filters: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	// Validate filter column names
+	for _, f := range filters {
+		if err := SanitizeColumnName(f.Column); err != nil {
+			h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid filter column '%s': %s", f.Column, err.Error()), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Execute group by query
+	results, err := h.dbMgr.SelectGroupBy(tableName, groupByCol, filters)
+	if err != nil {
+		h.logger.Error("Failed to execute group by query", zap.Error(err), zap.String("table", tableName), zap.String("request_id", requestID))
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Failed to execute group by query: %s", err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert database.GroupByResult to formats.GroupByResult
+	formatResults := make([]formats.GroupByResult, len(results))
+	for i, r := range results {
+		formatResults[i] = formats.GroupByResult{
+			Key:            r.Key,
+			KeyDisplayName: r.KeyDisplayName,
+			Count:          r.Count,
+		}
+	}
+
+	// Write response
+	if err := formats.WriteGroupByJSON(w, formatResults); err != nil {
+		h.logger.Error("Failed to write group by response", zap.Error(err), zap.String("request_id", requestID))
+		h.sendErrorWithRequest(w, r, "Failed to format response", http.StatusInternalServerError)
+	}
+}
+
+// handleCursorRead handles SELECT operations with cursor-based pagination.
+func (h *CRUDHandler) handleCursorRead(w http.ResponseWriter, r *http.Request, tableName, cursorStr string, isInitial bool) {
+	requestID := auth.GetRequestIDFromContext(r.Context())
+
+	// Parse select columns
+	selectColumns, err := ParseSelectColumns(r)
+	if err != nil {
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid select: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	// Validate select columns exist in table schema
+	if len(selectColumns) > 0 {
+		if err := h.dbMgr.ValidateColumns(tableName, selectColumns); err != nil {
+			h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid select columns: %s", err.Error()), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Parse filters
+	filters, err := ParseFilters(r)
+	if err != nil {
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid filters: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	// Validate filter column names
+	for _, f := range filters {
+		if err := SanitizeColumnName(f.Column); err != nil {
+			h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid filter column '%s': %s", f.Column, err.Error()), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Parse sorts - required for cursor pagination
+	sorts, err := ParseSorts(r)
+	if err != nil {
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid sort: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	// Validate sort column names
+	for _, s := range sorts {
+		if err := SanitizeColumnName(s.Column); err != nil {
+			h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid sort column '%s': %s", s.Column, err.Error()), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// If no sorts specified, default to sorting by first column or 'id' if available
+	if len(sorts) == 0 {
+		sorts = []database.Sort{{Column: "id", Direction: "asc"}}
+	}
+
+	// Get limit (per_page equivalent)
+	limit := h.maxRowsPerPage
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := parseInt(limitStr); err == nil && l > 0 {
+			limit = l
+			if limit > h.maxRowsPerPage {
+				limit = h.maxRowsPerPage
+			}
+		}
+	}
+
+	// Decode cursor if not initial request
+	var cursorInfo *database.CursorInfo
+	if !isInitial {
+		cursor, err := DecodeCursor(cursorStr)
+		if err != nil {
+			h.sendErrorWithRequest(w, r, fmt.Sprintf("Invalid cursor: %s", err.Error()), http.StatusBadRequest)
+			return
+		}
+		if cursor != nil {
+			cursorInfo = &database.CursorInfo{
+				SortColumns:    cursor.SortColumns,
+				SortValues:     cursor.SortValues,
+				SortDirections: cursor.SortDirections,
+				Offset:         cursor.Offset,
+			}
+		}
+	}
+
+	// Execute query with cursor
+	rows, err := h.dbMgr.SelectWithCursor(tableName, selectColumns, filters, sorts, limit, cursorInfo)
+	if err != nil {
+		h.logger.Error("Failed to query data with cursor", zap.Error(err), zap.String("table", tableName), zap.String("request_id", requestID))
+		h.sendErrorWithRequest(w, r, fmt.Sprintf("Failed to query data: %s", err.Error()), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	// Extract sort columns and directions
+	sortColumns := make([]string, len(sorts))
+	sortDirections := make([]string, len(sorts))
+	for i, s := range sorts {
+		sortColumns[i] = s.Column
+		sortDirections[i] = s.Direction
+	}
+
+	// Build cursor function
+	buildCursorFn := func(sortCols, sortDirs []string, lastValues []interface{}, offset int) (string, error) {
+		cursor, err := BuildNextCursor(sortCols, sortDirs, lastValues, offset)
+		if err != nil {
+			return "", err
+		}
+		return EncodeCursor(cursor)
+	}
+
+	// Write response with cursor
+	if err := formats.WriteJSONWithCursor(w, rows, limit, sortColumns, sortDirections, buildCursorFn); err != nil {
+		h.logger.Error("Failed to format cursor response", zap.Error(err), zap.String("request_id", requestID))
+		h.sendErrorWithRequest(w, r, "Failed to format response", http.StatusInternalServerError)
+	}
+}
+
+// parseInt is a helper to parse an integer from a string
+func parseInt(s string) (int, error) {
+	var i int
+	_, err := fmt.Sscanf(s, "%d", &i)
+	return i, err
 }
 
 // UpdateRequestFilter represents a filter condition in the update request body.

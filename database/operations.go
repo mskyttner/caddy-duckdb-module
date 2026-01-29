@@ -532,10 +532,17 @@ func (m *Manager) getOrPrepareDelete(table string, where map[string]interface{})
 	return stmt, whereCols, nil
 }
 
-// Select executes a SELECT query with optional filters, sorting, and pagination.
+// Select executes a SELECT query with optional column selection, filters, sorting, and pagination.
+// If columns is nil or empty, SELECT * is used.
 // This is a read-only operation and does not use transactions for better performance.
-func (m *Manager) Select(table string, filters []Filter, sorts []Sort, limit, offset int) (*sql.Rows, error) {
-	query := fmt.Sprintf("SELECT * FROM %s", table)
+func (m *Manager) Select(table string, columns []string, filters []Filter, sorts []Sort, limit, offset int) (*sql.Rows, error) {
+	// Build column list
+	columnList := "*"
+	if len(columns) > 0 {
+		columnList = strings.Join(columns, ", ")
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s", columnList, table)
 	values := make([]interface{}, 0)
 	paramIndex := 1
 
@@ -571,6 +578,128 @@ func (m *Manager) Select(table string, filters []Filter, sorts []Sort, limit, of
 	}
 
 	return m.QueryMain(query, values...)
+}
+
+// CursorInfo contains cursor state for keyset pagination.
+type CursorInfo struct {
+	SortColumns    []string
+	SortValues     []interface{}
+	SortDirections []string
+	Offset         int
+}
+
+// SelectWithCursor executes a SELECT query with cursor-based (keyset) pagination.
+// This provides efficient pagination for large datasets by using WHERE conditions
+// instead of OFFSET.
+func (m *Manager) SelectWithCursor(table string, columns []string, filters []Filter, sorts []Sort, limit int, cursor *CursorInfo) (*sql.Rows, error) {
+	// Build column list
+	columnList := "*"
+	if len(columns) > 0 {
+		columnList = strings.Join(columns, ", ")
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s", columnList, table)
+	values := make([]interface{}, 0)
+	paramIndex := 1
+
+	// Collect all WHERE conditions
+	whereClauses := make([]string, 0)
+
+	// Add filter conditions
+	if len(filters) > 0 {
+		for _, f := range filters {
+			clause, val := f.ToSQL(paramIndex)
+			whereClauses = append(whereClauses, clause)
+			if val != nil {
+				values = append(values, val)
+				paramIndex++
+			}
+		}
+	}
+
+	// Add cursor condition for keyset pagination
+	if cursor != nil && len(cursor.SortColumns) > 0 && len(cursor.SortValues) > 0 {
+		cursorCondition, cursorValues := buildCursorCondition(cursor, paramIndex)
+		if cursorCondition != "" {
+			whereClauses = append(whereClauses, cursorCondition)
+			values = append(values, cursorValues...)
+			paramIndex += len(cursorValues)
+		}
+	}
+
+	// Add WHERE clause if conditions exist
+	if len(whereClauses) > 0 {
+		query += " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// Add ORDER BY clause - required for cursor pagination
+	if len(sorts) > 0 {
+		sortClauses := make([]string, 0, len(sorts))
+		for _, s := range sorts {
+			sortClauses = append(sortClauses, s.ToSQL())
+		}
+		query += " ORDER BY " + strings.Join(sortClauses, ", ")
+	}
+
+	// Add LIMIT (fetch one extra to detect if there are more results)
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit+1)
+	}
+
+	return m.QueryMain(query, values...)
+}
+
+// buildCursorCondition builds the WHERE condition for keyset pagination.
+// For a cursor with columns (a, b) and values (va, vb) with ASC direction:
+// WHERE (a > va) OR (a = va AND b > vb)
+func buildCursorCondition(cursor *CursorInfo, startParamIndex int) (string, []interface{}) {
+	if cursor == nil || len(cursor.SortColumns) == 0 {
+		return "", nil
+	}
+
+	values := make([]interface{}, 0)
+	conditions := make([]string, 0)
+	paramIndex := startParamIndex
+
+	// Build progressive conditions for each sort column
+	for i := range cursor.SortColumns {
+		// Build equality conditions for all previous columns
+		eqParts := make([]string, 0)
+		for j := 0; j < i; j++ {
+			eqParts = append(eqParts, fmt.Sprintf("%s = $%d", cursor.SortColumns[j], paramIndex))
+			values = append(values, cursor.SortValues[j])
+			paramIndex++
+		}
+
+		// Add the comparison condition for current column
+		dir := "asc"
+		if i < len(cursor.SortDirections) {
+			dir = strings.ToLower(cursor.SortDirections[i])
+		}
+
+		op := ">"
+		if dir == "desc" {
+			op = "<"
+		}
+
+		compPart := fmt.Sprintf("%s %s $%d", cursor.SortColumns[i], op, paramIndex)
+		values = append(values, cursor.SortValues[i])
+		paramIndex++
+
+		// Combine: (eq1 AND eq2 AND ... AND comp)
+		if len(eqParts) > 0 {
+			conditions = append(conditions, "("+strings.Join(eqParts, " AND ")+" AND "+compPart+")")
+		} else {
+			conditions = append(conditions, "("+compPart+")")
+		}
+	}
+
+	// Combine all conditions with OR
+	if len(conditions) == 0 {
+		return "", nil
+	}
+
+	return "(" + strings.Join(conditions, " OR ") + ")", values
 }
 
 // Count returns the total number of rows in a table matching the filters.
@@ -646,6 +775,224 @@ func (s Sort) ToSQL() string {
 	return fmt.Sprintf("%s %s", s.Column, dir)
 }
 
+// MacroInfo represents information about a table macro.
+type MacroInfo struct {
+	Name       string   `json:"name"`
+	Parameters []string `json:"parameters"`
+}
+
+// ViewInfo represents information about a view.
+type ViewInfo struct {
+	Name string `json:"name"`
+}
+
+// ListAPIMacros returns all table macros with api_ prefix in the main schema.
+func (m *Manager) ListAPIMacros() ([]MacroInfo, error) {
+	query := `
+		SELECT function_name, parameters
+		FROM duckdb_functions()
+		WHERE function_type = 'table_macro'
+		  AND schema_name = 'main'
+		  AND function_name LIKE 'api_%'
+		ORDER BY function_name
+	`
+
+	rows, err := m.QueryMain(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list macros: %w", err)
+	}
+	defer rows.Close()
+
+	macros := make([]MacroInfo, 0)
+	for rows.Next() {
+		var name string
+		var params interface{}
+		if err := rows.Scan(&name, &params); err != nil {
+			return nil, fmt.Errorf("failed to scan macro info: %w", err)
+		}
+
+		// Convert parameters to string slice
+		paramsList := make([]string, 0)
+		if params != nil {
+			// DuckDB returns parameters as a list
+			if paramSlice, ok := params.([]interface{}); ok {
+				for _, p := range paramSlice {
+					if pStr, ok := p.(string); ok {
+						paramsList = append(paramsList, pStr)
+					}
+				}
+			}
+		}
+
+		macros = append(macros, MacroInfo{
+			Name:       name,
+			Parameters: paramsList,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating macros: %w", err)
+	}
+
+	return macros, nil
+}
+
+// ExecuteMacro executes a table macro with the given parameters.
+// Only macros with api_ prefix are allowed.
+func (m *Manager) ExecuteMacro(name string, params map[string]string, limit, offset int) (*sql.Rows, error) {
+	// Security check: only allow api_ prefixed macros
+	if !strings.HasPrefix(name, "api_") {
+		return nil, fmt.Errorf("only api_ prefixed macros are allowed")
+	}
+
+	// Build parameter list for the macro call
+	paramValues := make([]interface{}, 0)
+	paramPlaceholders := make([]string, 0)
+	i := 1
+	for _, v := range params {
+		paramPlaceholders = append(paramPlaceholders, fmt.Sprintf("$%d", i))
+		paramValues = append(paramValues, v)
+		i++
+	}
+
+	// Build query: SELECT * FROM macro_name(params)
+	var query string
+	if len(paramPlaceholders) > 0 {
+		query = fmt.Sprintf("SELECT * FROM %s(%s)", name, strings.Join(paramPlaceholders, ", "))
+	} else {
+		query = fmt.Sprintf("SELECT * FROM %s()", name)
+	}
+
+	// Add LIMIT and OFFSET
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	if offset > 0 {
+		query += fmt.Sprintf(" OFFSET %d", offset)
+	}
+
+	return m.QueryMain(query, paramValues...)
+}
+
+// ListAPIViews returns all views with api_ prefix in the main schema.
+func (m *Manager) ListAPIViews() ([]ViewInfo, error) {
+	query := `
+		SELECT view_name
+		FROM duckdb_views()
+		WHERE schema_name = 'main'
+		  AND view_name LIKE 'api_%'
+		ORDER BY view_name
+	`
+
+	rows, err := m.QueryMain(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list views: %w", err)
+	}
+	defer rows.Close()
+
+	views := make([]ViewInfo, 0)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("failed to scan view info: %w", err)
+		}
+
+		views = append(views, ViewInfo{
+			Name: name,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating views: %w", err)
+	}
+
+	return views, nil
+}
+
+// QueryView executes a SELECT query on a view with optional filters, sorting, and pagination.
+// Only views with api_ prefix are allowed.
+func (m *Manager) QueryView(name string, columns []string, filters []Filter, sorts []Sort, limit, offset int) (*sql.Rows, error) {
+	// Security check: only allow api_ prefixed views
+	if !strings.HasPrefix(name, "api_") {
+		return nil, fmt.Errorf("only api_ prefixed views are allowed")
+	}
+
+	// Build column list
+	columnList := "*"
+	if len(columns) > 0 {
+		columnList = strings.Join(columns, ", ")
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s", columnList, name)
+	values := make([]interface{}, 0)
+	paramIndex := 1
+
+	// Add WHERE clause if filters exist
+	if len(filters) > 0 {
+		whereClauses := make([]string, 0, len(filters))
+		for _, f := range filters {
+			clause, val := f.ToSQL(paramIndex)
+			whereClauses = append(whereClauses, clause)
+			if val != nil {
+				values = append(values, val)
+				paramIndex++
+			}
+		}
+		query += " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// Add ORDER BY clause if sorts exist
+	if len(sorts) > 0 {
+		sortClauses := make([]string, 0, len(sorts))
+		for _, s := range sorts {
+			sortClauses = append(sortClauses, s.ToSQL())
+		}
+		query += " ORDER BY " + strings.Join(sortClauses, ", ")
+	}
+
+	// Add LIMIT and OFFSET
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	if offset > 0 {
+		query += fmt.Sprintf(" OFFSET %d", offset)
+	}
+
+	return m.QueryMain(query, values...)
+}
+
+// ViewExists checks if a view exists in the main database.
+func (m *Manager) ViewExists(viewName string) (bool, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM duckdb_views()
+		WHERE schema_name = 'main' AND view_name = $1
+	`
+	var count int
+	err := m.QueryRowScanMain(query, []interface{}{&count}, viewName)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// MacroExists checks if a table macro exists in the main database.
+func (m *Manager) MacroExists(macroName string) (bool, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM duckdb_functions()
+		WHERE function_type = 'table_macro'
+		  AND schema_name = 'main'
+		  AND function_name = $1
+	`
+	var count int
+	err := m.QueryRowScanMain(query, []interface{}{&count}, macroName)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // TableExists checks if a table exists in the main database.
 func (m *Manager) TableExists(table string) (bool, error) {
 	query := `
@@ -659,4 +1006,99 @@ func (m *Manager) TableExists(table string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// GroupByResult represents a single group in aggregation results.
+type GroupByResult struct {
+	Key            interface{} `json:"key"`
+	KeyDisplayName string      `json:"key_display_name"`
+	Count          int64       `json:"count"`
+}
+
+// SelectGroupBy executes a GROUP BY query and returns aggregated counts.
+// Results are ordered by count descending.
+func (m *Manager) SelectGroupBy(table, groupByCol string, filters []Filter) ([]GroupByResult, error) {
+	query := fmt.Sprintf("SELECT %s, COUNT(*) as count FROM %s", groupByCol, table)
+	values := make([]interface{}, 0)
+	paramIndex := 1
+
+	// Add WHERE clause if filters exist
+	if len(filters) > 0 {
+		whereClauses := make([]string, 0, len(filters))
+		for _, f := range filters {
+			clause, val := f.ToSQL(paramIndex)
+			whereClauses = append(whereClauses, clause)
+			if val != nil {
+				values = append(values, val)
+				paramIndex++
+			}
+		}
+		query += " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	query += fmt.Sprintf(" GROUP BY %s ORDER BY count DESC", groupByCol)
+
+	rows, err := m.QueryMain(query, values...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute group by query: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]GroupByResult, 0)
+	for rows.Next() {
+		var key interface{}
+		var count int64
+		if err := rows.Scan(&key, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan group by result: %w", err)
+		}
+
+		// Convert key to string for display name
+		keyDisplayName := fmt.Sprintf("%v", key)
+
+		results = append(results, GroupByResult{
+			Key:            key,
+			KeyDisplayName: keyDisplayName,
+			Count:          count,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating group by results: %w", err)
+	}
+
+	return results, nil
+}
+
+// ValidateColumns checks if all specified columns exist in the table schema.
+// Returns an error listing the invalid columns if any are not found.
+func (m *Manager) ValidateColumns(table string, columns []string) error {
+	if len(columns) == 0 {
+		return nil
+	}
+
+	// Get all columns for the table
+	tableColumns, err := m.getTableColumns(table)
+	if err != nil {
+		return fmt.Errorf("failed to get table schema: %w", err)
+	}
+
+	// Build a set of valid column names for fast lookup
+	validColumns := make(map[string]bool)
+	for _, col := range tableColumns {
+		validColumns[col] = true
+	}
+
+	// Check each requested column
+	invalidColumns := make([]string, 0)
+	for _, col := range columns {
+		if !validColumns[col] {
+			invalidColumns = append(invalidColumns, col)
+		}
+	}
+
+	if len(invalidColumns) > 0 {
+		return fmt.Errorf("invalid columns: %s", strings.Join(invalidColumns, ", "))
+	}
+
+	return nil
 }

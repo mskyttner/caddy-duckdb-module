@@ -164,12 +164,12 @@ func TestOpenAPIHandler_Spec_Tags(t *testing.T) {
 	if !ok {
 		t.Fatal("Expected 'tags' array in spec")
 	}
-	if len(tags) != 3 {
-		t.Errorf("Expected 3 tags, got %d", len(tags))
+	if len(tags) != 5 {
+		t.Errorf("Expected 5 tags, got %d", len(tags))
 	}
 
 	// Verify tag names
-	expectedTags := map[string]bool{"CRUD": false, "Query": false, "OpenAPI": false}
+	expectedTags := map[string]bool{"CRUD": false, "Query": false, "Macro": false, "View": false, "OpenAPI": false}
 	for _, tag := range tags {
 		tagMap, ok := tag.(map[string]interface{})
 		if !ok {
