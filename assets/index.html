@@ -387,10 +387,12 @@
                     <select id="presets">
                         <option value="">-- Query Presets --</option>
                         <option value="SELECT 1 AS test;">Test connection</option>
+                        <option value="SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'main' ORDER BY table_type, table_name;">List tables</option>
+                        <option value="SELECT table_name AS view_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'VIEW' AND table_name LIKE 'api_%' ORDER BY table_name;">List API views</option>
+                        <option value="SELECT function_name AS macro_name, parameters FROM duckdb_functions() WHERE function_type = 'table_macro' AND function_name LIKE 'api_%' ORDER BY function_name;">List API macros</option>
+                        <option value="SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'main' ORDER BY table_name, ordinal_position;">List columns</option>
                         <option value="SELECT * FROM duckdb_functions() LIMIT 20;">List functions</option>
                         <option value="SELECT * FROM duckdb_settings();">Show settings</option>
-                        <option value="SELECT table_name, column_name, data_type FROM information_schema.columns ORDER BY table_name, ordinal_position;">List columns</option>
-                        <option value="SELECT * FROM information_schema.tables WHERE table_schema = 'main';">List tables</option>
                         <option value="PRAGMA database_size;">Database size</option>
                         <option value="PRAGMA version;">DuckDB version</option>
                     </select>
@@ -424,7 +426,7 @@
         <footer>
             Powered by <a href="https://duckdb.org" target="_blank" rel="noopener">DuckDB</a>
             &middot;
-            <a href="docs/" target="_blank" rel="noopener">API Docs</a>
+            <a href="../docs/" target="_blank" rel="noopener">API Docs</a>
         </footer>
     </div>
 
@@ -571,7 +573,7 @@
                         headers['X-API-Key'] = apiKey;
                     }
 
-                    const response = await fetch('query?default_format=compact', {
+                    const response = await fetch('../query?default_format=compact', {
                         method: 'POST',
                         headers: headers,
                         body: JSON.stringify({ sql: sql })
@@ -580,7 +582,7 @@
                     const data = await response.json();
 
                     if (!response.ok) {
-                        throw new Error(data.error || data.message || `HTTP ${response.status}`);
+                        throw new Error(data.message || data.error || `HTTP ${response.status}`);
                     }
 
                     renderResults(data);
