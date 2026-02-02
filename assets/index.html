@@ -187,6 +187,24 @@
             color: var(--text-secondary);
         }
 
+        .limit-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        #row-limit {
+            width: 80px;
+            padding: 6px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 0.85rem;
+        }
+
         #loading {
             display: none;
             align-items: center;
@@ -247,12 +265,53 @@
             margin-right: 20px;
         }
 
-        #results {
+        .spacer {
+            flex: 1;
+        }
+
+        .btn-copy {
+            padding: 6px 12px;
+            font-size: 0.8rem;
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+
+        .btn-copy:hover {
+            background-color: var(--bg-tertiary);
+        }
+
+        .btn-copy.hidden {
+            display: none;
+        }
+
+        .btn-copy.copied {
+            background-color: var(--success-color);
+            color: white;
+            border-color: var(--success-color);
+        }
+
+        #results-wrapper {
             overflow-x: auto;
+            max-width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            transform: rotateX(180deg);
+        }
+
+        #results-wrapper:empty {
+            border: none;
+        }
+
+        #results {
+            transform: rotateX(180deg);
         }
 
         .results-table {
-            width: 100%;
+            width: max-content;
+            min-width: 100%;
             border-collapse: collapse;
             font-size: 0.85rem;
         }
@@ -413,14 +472,22 @@
                             <div class="spinner"></div>
                             <span>Executing query...</span>
                         </div>
+                        <label class="limit-label">
+                            Limit:
+                            <input type="number" id="row-limit" value="1000" min="0" max="100000" title="Max rows to return (0 = no limit)">
+                        </label>
                         <span class="shortcut-hint">Ctrl+Enter to run</span>
+                        <span class="spacer"></span>
+                        <button type="button" class="btn-copy hidden" id="copy-btn" title="Copy as TSV (tab-separated)">Copy to Clipboard</button>
                     </div>
                 </form>
             </div>
 
             <div id="error"></div>
             <div id="stats"></div>
-            <div id="results"></div>
+            <div id="results-wrapper">
+                <div id="results"></div>
+            </div>
         </main>
 
         <footer>
@@ -471,7 +538,11 @@
             const errorDiv = document.getElementById('error');
             const statsDiv = document.getElementById('stats');
             const resultsDiv = document.getElementById('results');
+            const copyBtn = document.getElementById('copy-btn');
             const resultsTemplate = document.getElementById('results-template').innerHTML;
+
+            // Store last results for copy functionality
+            let lastResultData = null;
 
             // Numeric types for bar rendering
             const numericTypes = new Set([
@@ -544,9 +615,18 @@
                 history.replaceState(null, '', '#' + encoded);
             }
 
+            // Check if SQL already has a LIMIT clause
+            function hasLimitClause(sql) {
+                // Simple check - look for LIMIT keyword not inside quotes
+                const upperSql = sql.toUpperCase();
+                // Remove string literals to avoid false positives
+                const noStrings = upperSql.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
+                return /\bLIMIT\s+\d+/i.test(noStrings);
+            }
+
             // Query execution
             async function executeQuery() {
-                const sql = sqlTextarea.value.trim();
+                let sql = sqlTextarea.value.trim();
                 if (!sql) {
                     showError('Please enter a SQL query');
                     return;
@@ -556,10 +636,19 @@
                 saveApiKey();
                 updateHash(sql);
 
+                // Apply row limit if set and query doesn't have LIMIT
+                const rowLimit = parseInt(document.getElementById('row-limit').value, 10);
+                if (rowLimit > 0 && !hasLimitClause(sql)) {
+                    // Remove trailing semicolon if present, add LIMIT, then add semicolon back
+                    sql = sql.replace(/;?\s*$/, '') + ' LIMIT ' + rowLimit + ';';
+                }
+
                 // Clear previous results
                 hideError();
                 hideStats();
                 resultsDiv.innerHTML = '';
+                copyBtn.classList.add('hidden');
+                lastResultData = null;
 
                 // Show loading state
                 queryForm.classList.add('htmx-request');
@@ -672,6 +761,14 @@
 
                 const html = Mustache.render(resultsTemplate, templateData);
                 resultsDiv.innerHTML = html;
+
+                // Store data for copy functionality and show/hide copy button
+                lastResultData = data;
+                if (hasData) {
+                    copyBtn.classList.remove('hidden');
+                } else {
+                    copyBtn.classList.add('hidden');
+                }
             }
 
             function escapeHtml(text) {
@@ -714,6 +811,43 @@
                 errorDiv.classList.remove('show');
             }
 
+            // Copy to clipboard
+            function copyResultsToClipboard() {
+                if (!lastResultData || !lastResultData.data || lastResultData.data.length === 0) {
+                    return;
+                }
+
+                const meta = lastResultData.meta || [];
+                const rows = lastResultData.data || [];
+
+                // Build TSV (tab-separated values)
+                const header = meta.map(col => col.name).join('\t');
+                const dataRows = rows.map(row =>
+                    row.map(cell => {
+                        if (cell === null) return '';
+                        // Handle decimal format
+                        if (cell && typeof cell === 'object' && 'Value' in cell) {
+                            return cell.Value / Math.pow(10, cell.Scale || 0);
+                        }
+                        return String(cell).replace(/\t/g, ' ').replace(/\n/g, ' ');
+                    }).join('\t')
+                ).join('\n');
+
+                const tsv = header + '\n' + dataRows;
+
+                navigator.clipboard.writeText(tsv).then(() => {
+                    copyBtn.textContent = 'Copied!';
+                    copyBtn.classList.add('copied');
+                    setTimeout(() => {
+                        copyBtn.textContent = 'Copy to Clipboard';
+                        copyBtn.classList.remove('copied');
+                    }, 2000);
+                }).catch(err => {
+                    console.error('Failed to copy:', err);
+                    showError('Failed to copy to clipboard');
+                });
+            }
+
             // Event listeners
             function setupEventListeners() {
                 // Theme toggle
@@ -747,6 +881,9 @@
 
                 // Handle hash changes
                 window.addEventListener('hashchange', loadQueryFromHash);
+
+                // Copy to clipboard
+                copyBtn.addEventListener('click', copyResultsToClipboard);
             }
 
             // Start
