@@ -231,14 +231,16 @@ func (h *QueryHandler) sendHeadResponse(w http.ResponseWriter, format string) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// isSelectQuery checks if the SQL query is a SELECT query.
+// isSelectQuery checks if the SQL query is a read-only query.
 func (h *QueryHandler) isSelectQuery(sql string) bool {
 	trimmed := strings.TrimSpace(strings.ToUpper(sql))
 	return strings.HasPrefix(trimmed, "SELECT") ||
 		strings.HasPrefix(trimmed, "WITH") ||
+		strings.HasPrefix(trimmed, "FROM") || // DuckDB shorthand: FROM table = SELECT * FROM table
 		strings.HasPrefix(trimmed, "SHOW") ||
 		strings.HasPrefix(trimmed, "DESCRIBE") ||
-		strings.HasPrefix(trimmed, "EXPLAIN")
+		strings.HasPrefix(trimmed, "EXPLAIN") ||
+		strings.HasPrefix(trimmed, "PRAGMA")
 }
 
 // Pre-compiled regexes for internal table protection (compiled once at package init)
