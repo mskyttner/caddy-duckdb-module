@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DuckDB Query UI</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx-ext-client-side-templates@2.0.1/client-side-templates.js"></script>
+    <script src="https://unpkg.com/mustache@4.2.0/mustache.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f5f5f5;
+            --bg-tertiary: #e8e8e8;
+            --text-primary: #1a1a1a;
+            --text-secondary: #666666;
+            --border-color: #ddd;
+            --accent-color: #0066cc;
+            --accent-hover: #0052a3;
+            --error-color: #dc3545;
+            --error-bg: #f8d7da;
+            --success-color: #28a745;
+            --null-color: #999;
+            --bar-color: rgba(0, 102, 204, 0.2);
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #2d2d2d;
+            --bg-tertiary: #3d3d3d;
+            --text-primary: #e8e8e8;
+            --text-secondary: #aaa;
+            --border-color: #444;
+            --accent-color: #4da6ff;
+            --accent-hover: #66b3ff;
+            --error-color: #ff6b6b;
+            --error-bg: #3d2020;
+            --null-color: #666;
+            --bar-color: rgba(77, 166, 255, 0.2);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            transition: background-color 0.2s, color 0.2s;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .auth-section {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .auth-section label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        #api-key {
+            padding: 6px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            width: 200px;
+        }
+
+        .theme-toggle {
+            background: none;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 6px 10px;
+            cursor: pointer;
+            color: var(--text-primary);
+            font-size: 1rem;
+        }
+
+        .theme-toggle:hover {
+            background-color: var(--bg-secondary);
+        }
+
+        .query-section {
+            margin-bottom: 20px;
+        }
+
+        .query-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        #presets {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+
+        #sql {
+            width: 100%;
+            min-height: 120px;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+            font-size: 0.9rem;
+            resize: vertical;
+            line-height: 1.5;
+        }
+
+        #sql:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+
+        .btn-primary {
+            background-color: var(--accent-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--accent-hover);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .shortcut-hint {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        #loading {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+        }
+
+        .htmx-request #loading {
+            display: flex;
+        }
+
+        .htmx-request #run-btn {
+            display: none;
+        }
+
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border-color);
+            border-top-color: var(--accent-color);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #error {
+            display: none;
+            padding: 12px 16px;
+            background-color: var(--error-bg);
+            border: 1px solid var(--error-color);
+            border-radius: 4px;
+            color: var(--error-color);
+            margin-bottom: 20px;
+        }
+
+        #error.show {
+            display: block;
+        }
+
+        #stats {
+            display: none;
+            padding: 10px 16px;
+            background-color: var(--bg-secondary);
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        #stats.show {
+            display: block;
+        }
+
+        #stats span {
+            margin-right: 20px;
+        }
+
+        #results {
+            overflow-x: auto;
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        .results-table th,
+        .results-table td {
+            padding: 8px 12px;
+            text-align: left;
+            border: 1px solid var(--border-color);
+            white-space: nowrap;
+        }
+
+        .results-table th {
+            background-color: var(--bg-tertiary);
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+
+        .results-table th .type {
+            font-weight: normal;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            display: block;
+        }
+
+        .results-table tr:hover {
+            background-color: var(--bg-secondary);
+        }
+
+        .results-table td.row-num {
+            background-color: var(--bg-secondary);
+            color: var(--text-secondary);
+            text-align: right;
+            font-size: 0.75rem;
+            width: 50px;
+        }
+
+        .results-table td.null {
+            color: var(--null-color);
+            font-style: italic;
+        }
+
+        .results-table td.numeric {
+            text-align: right;
+            font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+        }
+
+        .results-table td .bar {
+            display: block;
+            height: 3px;
+            background-color: var(--bar-color);
+            margin-top: 4px;
+            border-radius: 1px;
+        }
+
+        .empty-results {
+            padding: 40px;
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            text-align: center;
+        }
+
+        footer a {
+            color: var(--accent-color);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .header-controls {
+                width: 100%;
+            }
+
+            #api-key {
+                width: 100%;
+            }
+
+            .query-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>
+                <svg width="24" height="24" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="50" cy="50" r="45" fill="var(--accent-color)"/>
+                    <ellipse cx="50" cy="35" rx="25" ry="8" fill="white" opacity="0.9"/>
+                    <ellipse cx="50" cy="50" rx="25" ry="8" fill="white" opacity="0.7"/>
+                    <ellipse cx="50" cy="65" rx="25" ry="8" fill="white" opacity="0.5"/>
+                </svg>
+                DuckDB Query UI
+            </h1>
+            <div class="header-controls">
+                <div class="auth-section">
+                    <label for="api-key">API Key:</label>
+                    <input type="password" id="api-key" placeholder="Enter API key" autocomplete="off">
+                </div>
+                <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+                    <span class="theme-icon">&#9728;</span>
+                </button>
+            </div>
+        </header>
+
+        <main>
+            <div class="query-section" hx-ext="client-side-templates">
+                <div class="query-controls">
+                    <select id="presets">
+                        <option value="">-- Query Presets --</option>
+                        <option value="SELECT 1 AS test;">Test connection</option>
+                        <option value="SELECT * FROM duckdb_functions() LIMIT 20;">List functions</option>
+                        <option value="SELECT * FROM duckdb_settings();">Show settings</option>
+                        <option value="SELECT table_name, column_name, data_type FROM information_schema.columns ORDER BY table_name, ordinal_position;">List columns</option>
+                        <option value="SELECT * FROM information_schema.tables WHERE table_schema = 'main';">List tables</option>
+                        <option value="PRAGMA database_size;">Database size</option>
+                        <option value="PRAGMA version;">DuckDB version</option>
+                    </select>
+                </div>
+
+                <form id="query-form">
+                    <textarea
+                        id="sql"
+                        name="sql"
+                        placeholder="Enter your SQL query here...&#10;&#10;Press Ctrl+Enter (or Cmd+Enter) to execute"
+                    ></textarea>
+
+                    <div class="query-controls" style="margin-top: 10px;">
+                        <button type="submit" class="btn btn-primary" id="run-btn">
+                            Run Query
+                        </button>
+                        <div id="loading">
+                            <div class="spinner"></div>
+                            <span>Executing query...</span>
+                        </div>
+                        <span class="shortcut-hint">Ctrl+Enter to run</span>
+                    </div>
+                </form>
+            </div>
+
+            <div id="error"></div>
+            <div id="stats"></div>
+            <div id="results"></div>
+        </main>
+
+        <footer>
+            Powered by <a href="https://duckdb.org" target="_blank" rel="noopener">DuckDB</a>
+            &middot;
+            <a href="docs/" target="_blank" rel="noopener">API Docs</a>
+        </footer>
+    </div>
+
+    <script id="results-template" type="x-tmpl-mustache">
+        {{#hasData}}
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    {{#meta}}
+                    <th>{{name}}<span class="type">{{type}}</span></th>
+                    {{/meta}}
+                </tr>
+            </thead>
+            <tbody>
+                {{#rows}}
+                <tr>
+                    <td class="row-num">{{rowNum}}</td>
+                    {{#cells}}
+                    <td class="{{classes}}">{{{display}}}{{#bar}}<span class="bar" style="width: {{barWidth}}%"></span>{{/bar}}</td>
+                    {{/cells}}
+                </tr>
+                {{/rows}}
+            </tbody>
+        </table>
+        {{/hasData}}
+        {{^hasData}}
+        <div class="empty-results">Query executed successfully. No rows returned.</div>
+        {{/hasData}}
+    </script>
+
+    <script>
+        (function() {
+            'use strict';
+
+            // DOM elements
+            const apiKeyInput = document.getElementById('api-key');
+            const themeToggle = document.getElementById('theme-toggle');
+            const presetsSelect = document.getElementById('presets');
+            const sqlTextarea = document.getElementById('sql');
+            const queryForm = document.getElementById('query-form');
+            const errorDiv = document.getElementById('error');
+            const statsDiv = document.getElementById('stats');
+            const resultsDiv = document.getElementById('results');
+            const resultsTemplate = document.getElementById('results-template').innerHTML;
+
+            // Numeric types for bar rendering
+            const numericTypes = new Set([
+                'TINYINT', 'SMALLINT', 'INTEGER', 'BIGINT', 'HUGEINT',
+                'UTINYINT', 'USMALLINT', 'UINTEGER', 'UBIGINT',
+                'FLOAT', 'DOUBLE', 'DECIMAL', 'REAL'
+            ]);
+
+            // Initialize
+            function init() {
+                loadApiKey();
+                loadTheme();
+                loadQueryFromHash();
+                setupEventListeners();
+                Mustache.parse(resultsTemplate);
+            }
+
+            // API Key management
+            function loadApiKey() {
+                const savedKey = localStorage.getItem('duckdb-api-key');
+                if (savedKey) {
+                    apiKeyInput.value = savedKey;
+                }
+            }
+
+            function saveApiKey() {
+                const key = apiKeyInput.value.trim();
+                if (key) {
+                    localStorage.setItem('duckdb-api-key', key);
+                } else {
+                    localStorage.removeItem('duckdb-api-key');
+                }
+            }
+
+            // Theme management
+            function loadTheme() {
+                const savedTheme = localStorage.getItem('duckdb-theme') || 'light';
+                document.documentElement.setAttribute('data-theme', savedTheme);
+                updateThemeIcon(savedTheme);
+            }
+
+            function toggleTheme() {
+                const currentTheme = document.documentElement.getAttribute('data-theme');
+                const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-theme', newTheme);
+                localStorage.setItem('duckdb-theme', newTheme);
+                updateThemeIcon(newTheme);
+            }
+
+            function updateThemeIcon(theme) {
+                const icon = themeToggle.querySelector('.theme-icon');
+                icon.textContent = theme === 'dark' ? '\u263E' : '\u2600';
+            }
+
+            // URL hash management
+            function loadQueryFromHash() {
+                const hash = window.location.hash;
+                if (hash && hash.startsWith('#')) {
+                    try {
+                        const query = decodeURIComponent(hash.slice(1));
+                        sqlTextarea.value = query;
+                    } catch (e) {
+                        console.warn('Failed to decode query from URL hash');
+                    }
+                }
+            }
+
+            function updateHash(query) {
+                const encoded = encodeURIComponent(query);
+                history.replaceState(null, '', '#' + encoded);
+            }
+
+            // Query execution
+            async function executeQuery() {
+                const sql = sqlTextarea.value.trim();
+                if (!sql) {
+                    showError('Please enter a SQL query');
+                    return;
+                }
+
+                const apiKey = apiKeyInput.value.trim();
+                saveApiKey();
+                updateHash(sql);
+
+                // Clear previous results
+                hideError();
+                hideStats();
+                resultsDiv.innerHTML = '';
+
+                // Show loading state
+                queryForm.classList.add('htmx-request');
+
+                try {
+                    const headers = {
+                        'Content-Type': 'application/json'
+                    };
+
+                    if (apiKey) {
+                        headers['X-API-Key'] = apiKey;
+                    }
+
+                    const response = await fetch('query?default_format=compact', {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify({ sql: sql })
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(data.error || data.message || `HTTP ${response.status}`);
+                    }
+
+                    renderResults(data);
+                    showStats(data);
+
+                } catch (err) {
+                    showError(err.message || 'Failed to execute query');
+                } finally {
+                    queryForm.classList.remove('htmx-request');
+                }
+            }
+
+            // Helper to extract numeric value from cell (handles DuckDB decimal format)
+            function getNumericValue(cell) {
+                if (cell === null) return null;
+                if (typeof cell === 'number') return cell;
+                // Handle DuckDB decimal format {Width, Scale, Value}
+                if (cell && typeof cell === 'object' && 'Value' in cell) {
+                    return cell.Value / Math.pow(10, cell.Scale || 0);
+                }
+                const parsed = parseFloat(cell);
+                return isNaN(parsed) ? null : parsed;
+            }
+
+            // Results rendering (uses compact format with meta/data arrays)
+            function renderResults(data) {
+                const meta = data.meta || [];
+                const rows = data.data || [];
+                const hasData = rows.length > 0;
+
+                // Find min/max for numeric columns (for bar rendering)
+                const numericRanges = {};
+                meta.forEach((col, idx) => {
+                    const baseType = col.type.replace(/\(.*\)/, '').toUpperCase();
+                    if (numericTypes.has(baseType)) {
+                        let min = Infinity, max = -Infinity;
+                        rows.forEach(row => {
+                            const val = getNumericValue(row[idx]);
+                            if (val !== null) {
+                                min = Math.min(min, val);
+                                max = Math.max(max, val);
+                            }
+                        });
+                        if (min !== Infinity && max !== -Infinity && max > min) {
+                            numericRanges[idx] = { min, max };
+                        }
+                    }
+                });
+
+                // Prepare template data
+                const templateData = {
+                    hasData: hasData,
+                    meta: meta,
+                    rows: rows.map((row, rowIdx) => ({
+                        rowNum: rowIdx + 1,
+                        cells: row.map((cell, colIdx) => {
+                            const col = meta[colIdx];
+                            const baseType = col.type.replace(/\(.*\)/, '').toUpperCase();
+                            const isNumeric = numericTypes.has(baseType);
+                            const isNull = cell === null;
+
+                            let classes = [];
+                            if (isNull) classes.push('null');
+                            if (isNumeric) classes.push('numeric');
+
+                            // Get display value (handle decimal format)
+                            const numericVal = getNumericValue(cell);
+                            let display = isNull ? 'NULL' : (numericVal !== null ? String(numericVal) : String(cell));
+                            let bar = false;
+                            let barWidth = 0;
+
+                            if (isNumeric && !isNull && numericRanges[colIdx] && numericVal !== null) {
+                                const range = numericRanges[colIdx];
+                                barWidth = ((numericVal - range.min) / (range.max - range.min)) * 100;
+                                bar = true;
+                            }
+
+                            return {
+                                classes: classes.join(' '),
+                                display: escapeHtml(display),
+                                bar: bar,
+                                barWidth: barWidth.toFixed(1)
+                            };
+                        })
+                    }))
+                };
+
+                const html = Mustache.render(resultsTemplate, templateData);
+                resultsDiv.innerHTML = html;
+            }
+
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            // Stats display (uses compact format with statistics field)
+            function showStats(data) {
+                const stats = data.statistics;
+                const rowCount = data.rows || 0;
+                const parts = [];
+                parts.push(`<span><strong>${rowCount}</strong> rows</span>`);
+
+                if (stats && stats.elapsed !== undefined) {
+                    const ms = (stats.elapsed * 1000).toFixed(2);
+                    parts.push(`<span>Elapsed: <strong>${ms}ms</strong></span>`);
+                }
+
+                if (stats && stats.rows_read !== undefined) {
+                    parts.push(`<span>Rows read: <strong>${stats.rows_read.toLocaleString()}</strong></span>`);
+                }
+
+                statsDiv.innerHTML = parts.join('');
+                statsDiv.classList.add('show');
+            }
+
+            function hideStats() {
+                statsDiv.classList.remove('show');
+            }
+
+            // Error display
+            function showError(message) {
+                errorDiv.textContent = message;
+                errorDiv.classList.add('show');
+            }
+
+            function hideError() {
+                errorDiv.classList.remove('show');
+            }
+
+            // Event listeners
+            function setupEventListeners() {
+                // Theme toggle
+                themeToggle.addEventListener('click', toggleTheme);
+
+                // API key save on change
+                apiKeyInput.addEventListener('change', saveApiKey);
+
+                // Preset selection
+                presetsSelect.addEventListener('change', function() {
+                    if (this.value) {
+                        sqlTextarea.value = this.value;
+                        this.selectedIndex = 0;
+                        sqlTextarea.focus();
+                    }
+                });
+
+                // Form submission
+                queryForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    executeQuery();
+                });
+
+                // Keyboard shortcut (Ctrl/Cmd + Enter)
+                sqlTextarea.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault();
+                        executeQuery();
+                    }
+                });
+
+                // Handle hash changes
+                window.addEventListener('hashchange', loadQueryFromHash);
+            }
+
+            // Start
+            init();
+        })();
+    </script>
+</body>
+</html>

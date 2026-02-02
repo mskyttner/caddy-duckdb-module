@@ -21,6 +21,16 @@
 #   DUCKDB_TEMP_DIRECTORY     - Temp directory for spilling (default: not set)
 
 :{$DUCKDB_PORT:8080} {
+	# Serve Query UI under the API route prefix (e.g., /duckdb/ui)
+	handle {$DUCKDB_ROUTE_PREFIX:/duckdb}/ui/* {
+		uri strip_prefix {$DUCKDB_ROUTE_PREFIX:/duckdb}/ui
+		root * /app/query-ui
+		file_server
+	}
+
+	# Redirect /duckdb/ui to /duckdb/ui/
+	redir {$DUCKDB_ROUTE_PREFIX:/duckdb}/ui {$DUCKDB_ROUTE_PREFIX:/duckdb}/ui/ permanent
+
 	# Serve Swagger UI docs under the API route prefix (e.g., /duckdb/docs)
 	handle {$DUCKDB_ROUTE_PREFIX:/duckdb}/docs/* {
 		uri strip_prefix {$DUCKDB_ROUTE_PREFIX:/duckdb}/docs

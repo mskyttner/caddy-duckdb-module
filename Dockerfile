@@ -60,7 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd -r caddy && useradd -r -g caddy caddy
 
 # Create directories with correct ownership upfront
-RUN mkdir -p /data /app /etc/caddy /app/swagger-ui-dist && \
+RUN mkdir -p /data /app /etc/caddy /app/swagger-ui-dist /app/query-ui && \
     chown -R caddy:caddy /data /app /etc/caddy
 
 WORKDIR /app
@@ -79,6 +79,9 @@ RUN cd /app/swagger-ui-dist && \
 
 # Copy binary from builder with correct ownership (avoids layer duplication)
 COPY --from=builder --chown=caddy:caddy /build/caddy .
+
+# Copy Query UI
+COPY --chown=caddy:caddy assets/index.html /app/query-ui/index.html
 
 # Copy Docker-specific configuration (uses /data volume paths)
 COPY --chown=caddy:caddy examples/Caddyfile.docker /etc/caddy/Caddyfile
