@@ -964,7 +964,7 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 				"type":        "apiKey",
 				"in":          "header",
 				"name":        "X-API-Key",
-				"description": "API key for authentication. Create keys in the auth database.",
+				"description": "API key for authentication. Alternative methods: 'api_key' query parameter, or HTTP Basic auth with username 'apikey' and API key as password (e.g., https://apikey:YOUR_KEY@host/path).",
 			},
 		},
 		"schemas": map[string]interface{}{

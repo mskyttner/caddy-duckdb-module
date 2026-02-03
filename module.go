@@ -233,8 +233,21 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 
 	// Authenticate all other requests
+	// API key can be provided via:
+	//  1. X-API-Key header (preferred)
+	//  2. api_key query parameter
+	//  3. HTTP Basic auth with username "apikey" and password as the API key
 	authenticated := false
 	apiKey := r.Header.Get("X-API-Key")
+	if apiKey == "" {
+		apiKey = r.URL.Query().Get("api_key")
+	}
+	if apiKey == "" {
+		// Check for Basic auth - username must be "apikey", password is the API key
+		if username, password, ok := r.BasicAuth(); ok && username == "apikey" {
+			apiKey = password
+		}
+	}
 	if apiKey != "" {
 		key, err := d.authorizer.AuthenticateAPIKey(apiKey)
 		if err == nil && key != nil {
@@ -247,7 +260,7 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	if !authenticated {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error":"Unauthorized","message":"Missing or invalid X-API-Key header","code":401}`))
+		w.Write([]byte(`{"error":"Unauthorized","message":"Missing API key: use X-API-Key header, api_key query parameter, or Basic auth with username 'apikey'","code":401}`))
 		return nil
 	}
 
