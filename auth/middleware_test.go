@@ -146,6 +146,155 @@ func TestMiddleware_Authenticate_InvalidKey(t *testing.T) {
 	}
 }
 
+func TestMiddleware_Authenticate_QueryParam(t *testing.T) {
+	mw, _, cleanup := setupMiddlewareTest(t)
+	defer cleanup()
+
+	// Create a test handler that will be called if auth succeeds
+	called := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		// Verify context has role
+		role := GetRoleFromContext(r.Context())
+		if role != "admin" {
+			t.Errorf("Expected role 'admin', got '%s'", role)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Wrap with authenticate middleware
+	handler := mw.Authenticate(testHandler)
+
+	// Use query parameter instead of header
+	req := httptest.NewRequest("GET", "/?api_key=test-key", nil)
+	// No X-API-Key header set
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Error("Expected handler to be called with api_key query param")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+func TestMiddleware_Authenticate_HeaderTakesPrecedence(t *testing.T) {
+	mw, authorizer, cleanup := setupMiddlewareTest(t)
+	defer cleanup()
+
+	// Create a second API key for a different role
+	authorizer.CreateAPIKey("query-key", "admin", nil)
+
+	called := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := mw.Authenticate(testHandler)
+
+	// Set both header and query param - header should take precedence
+	req := httptest.NewRequest("GET", "/?api_key=invalid-key", nil)
+	req.Header.Set("X-API-Key", "test-key") // Valid key in header
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Error("Expected handler to be called - header key should take precedence")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+func TestMiddleware_Authenticate_BasicAuth(t *testing.T) {
+	mw, _, cleanup := setupMiddlewareTest(t)
+	defer cleanup()
+
+	called := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		role := GetRoleFromContext(r.Context())
+		if role != "admin" {
+			t.Errorf("Expected role 'admin', got '%s'", role)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := mw.Authenticate(testHandler)
+
+	// Use Basic auth with username "apikey" and API key as password
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("apikey", "test-key")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Error("Expected handler to be called with Basic auth")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+func TestMiddleware_Authenticate_BasicAuthWrongUsername(t *testing.T) {
+	mw, _, cleanup := setupMiddlewareTest(t)
+	defer cleanup()
+
+	called := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+
+	handler := mw.Authenticate(testHandler)
+
+	// Use Basic auth with wrong username
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("wronguser", "test-key")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if called {
+		t.Error("Handler should not be called with wrong Basic auth username")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", rec.Code)
+	}
+}
+
+func TestMiddleware_Authenticate_HeaderTakesPrecedenceOverBasicAuth(t *testing.T) {
+	mw, _, cleanup := setupMiddlewareTest(t)
+	defer cleanup()
+
+	called := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := mw.Authenticate(testHandler)
+
+	// Set both header and Basic auth - header should take precedence
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-API-Key", "test-key") // Valid key in header
+	req.SetBasicAuth("apikey", "invalid-key")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Error("Expected handler to be called - header key should take precedence")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
 func TestMiddleware_Authorize_Allowed(t *testing.T) {
 	mw, _, cleanup := setupMiddlewareTest(t)
 	defer cleanup()

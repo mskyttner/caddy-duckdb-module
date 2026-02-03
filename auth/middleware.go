@@ -32,12 +32,28 @@ func NewMiddleware(authorizer *Authorizer) *Middleware {
 }
 
 // Authenticate extracts and validates the API key from the request.
+// The API key can be provided via:
+//  1. X-API-Key header (preferred)
+//  2. api_key query parameter
+//  3. HTTP Basic auth with username "apikey" and password as the API key
+//
+// Query parameter and Basic auth support enable tools that cannot set custom
+// HTTP headers (e.g., DuckDB CLI, R, curl with URL credentials).
 func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Extract API key from header
+		// Extract API key from header first, then fall back to query parameter, then Basic auth
 		apiKey := r.Header.Get("X-API-Key")
 		if apiKey == "" {
-			m.sendError(w, "Missing X-API-Key header", http.StatusUnauthorized)
+			apiKey = r.URL.Query().Get("api_key")
+		}
+		if apiKey == "" {
+			// Check for Basic auth - username must be "apikey", password is the API key
+			if username, password, ok := r.BasicAuth(); ok && username == "apikey" {
+				apiKey = password
+			}
+		}
+		if apiKey == "" {
+			m.sendError(w, "Missing API key: use X-API-Key header, api_key query parameter, or Basic auth with username 'apikey'", http.StatusUnauthorized)
 			return
 		}
 

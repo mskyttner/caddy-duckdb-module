@@ -35,14 +35,22 @@ func NewViewHandler(dbMgr *database.Manager, authorizer *auth.Authorizer, maxRow
 
 // ServeHTTP handles HTTP requests for view operations.
 func (h *ViewHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Only GET method allowed (read-only)
-	if r.Method != http.MethodGet {
+	// Only GET and HEAD methods allowed (read-only)
+	// HEAD is supported for HTTP clients that check content-type/size before downloading
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		h.sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Extract view name from path: /duckdb/view or /duckdb/view/{name}
 	viewName := h.extractViewName(r.URL.Path)
+
+	// Handle HEAD request - return headers only
+	if r.Method == http.MethodHead {
+		format := GetAcceptFormat(r)
+		h.sendHeadResponse(w, format)
+		return
+	}
 
 	if viewName == "" {
 		// List all available views
@@ -202,6 +210,10 @@ func (h *ViewHandler) formatResponse(w http.ResponseWriter, rows *sql.Rows, form
 	switch format {
 	case "csv":
 		return formats.WriteCSV(w, rows)
+	case "parquet":
+		return formats.WriteParquet(w, rows)
+	case "arrow":
+		return formats.WriteArrowIPC(w, rows)
 	case "json":
 		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig)
 	default:
@@ -218,4 +230,19 @@ func (h *ViewHandler) sendError(w http.ResponseWriter, message string, statusCod
 		"message": message,
 		"code":    statusCode,
 	})
+}
+
+// sendHeadResponse sends headers for HEAD requests without body.
+func (h *ViewHandler) sendHeadResponse(w http.ResponseWriter, format string) {
+	switch format {
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv")
+	case "parquet":
+		w.Header().Set("Content-Type", "application/parquet")
+	case "arrow":
+		w.Header().Set("Content-Type", "application/vnd.apache.arrow.stream")
+	default:
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(http.StatusOK)
 }
