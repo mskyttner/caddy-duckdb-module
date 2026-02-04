@@ -8,7 +8,6 @@ require (
 	github.com/duckdb/duckdb-go/v2 v2.5.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/lancedb/lancedb-go v0.1.2
 	github.com/spf13/cobra v1.10.1
 	go.uber.org/zap v1.27.0
 )
@@ -26,7 +25,6 @@ require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/apache/arrow-go/v18 v18.4.1 // indirect
-	github.com/apache/arrow/go/v17 v17.0.0 // indirect
 	github.com/apache/thrift v0.22.0 // indirect
 	github.com/aryann/difflib v0.0.0-20210328193216-ff5ff6dc229b // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

@@ -82,13 +82,10 @@ services:
 
   # FTS Sidecar Service (optional - uncomment to enable full-text search)
   # Provides the /find endpoint for full-text search using LanceDB
-  # Two versions available:
-  #   - Dockerfile.fts-python (recommended) - Python/FastAPI, simpler to build
-  #   - Dockerfile.fts (Go) - requires native LanceDB libraries
   # fts-sidecar:
   #   build:
   #     context: .
-  #     dockerfile: Dockerfile.fts-python  # or Dockerfile.fts for Go version
+  #     dockerfile: Dockerfile.fts-python
   #   container_name: fts-sidecar
   #   volumes:
   #     - duckdb-data:/data
