@@ -74,6 +74,10 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 				"description": "Query views (api_* prefixed)",
 			},
 			{
+				"name":        "Schema",
+				"description": "Table and view column schema information",
+			},
+			{
 				"name":        "OpenAPI",
 				"description": "API documentation",
 			},
@@ -105,6 +109,9 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 					},
 				},
 			},
+		},
+		"/api": map[string]interface{}{
+			"get": h.generateTableListOperation(),
 		},
 		"/api/{table}": map[string]interface{}{
 			"get":    h.generateReadOperation(),
@@ -140,6 +147,47 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 		},
 		"/view/{name}": map[string]interface{}{
 			"get": h.generateViewQueryOperation(),
+		},
+		"/api/{table}/columns": map[string]interface{}{
+			"get": h.generateTableColumnsOperation(),
+		},
+		"/view/{name}/columns": map[string]interface{}{
+			"get": h.generateViewColumnsOperation(),
+		},
+	}
+}
+
+// generateTableListOperation generates the GET /api operation spec.
+func (h *OpenAPIHandler) generateTableListOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"CRUD"},
+		"summary":     "List available tables",
+		"description": "Returns a list of all available database tables. Internal auth tables are excluded.",
+		"operationId": "listTables",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "List of available tables",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/TableListResponse",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -956,6 +1004,223 @@ func (h *OpenAPIHandler) generateViewQueryOperation() map[string]interface{} {
 	}
 }
 
+// generateTableColumnsOperation generates the GET /api/{table}/columns operation spec.
+func (h *OpenAPIHandler) generateTableColumnsOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Schema"},
+		"summary":     "Get table column schema",
+		"description": "Returns column names, types, and optional statistics for a table. Use format=transform for json_transform() compatibility in DuckDB queries.",
+		"operationId": "getTableColumns",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "table",
+				"in":          "path",
+				"required":    true,
+				"description": "Name of the database table",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			{
+				"name":        "format",
+				"in":          "query",
+				"description": "Response format: 'standard' (default) for LLMs/analysts, 'transform' for DuckDB json_transform(), 'summarize' for full statistics",
+				"schema": map[string]interface{}{
+					"type":    "string",
+					"enum":    []string{"standard", "transform", "summarize"},
+					"default": "standard",
+				},
+			},
+			{
+				"name":        "stats",
+				"in":          "query",
+				"description": "Include column statistics (min, max, approx_unique, null_percentage). Automatically true for format=summarize.",
+				"schema": map[string]interface{}{
+					"type":    "boolean",
+					"default": false,
+				},
+			},
+			{
+				"name":        "sample",
+				"in":          "query",
+				"description": "Maximum rows to sample for statistics calculation",
+				"schema": map[string]interface{}{
+					"type":    "integer",
+					"default": 10000,
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Column schema retrieved successfully",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"oneOf": []map[string]interface{}{
+								{"$ref": "#/components/schemas/StandardColumnsResponse"},
+								{"$ref": "#/components/schemas/TransformColumnsResponse"},
+								{"$ref": "#/components/schemas/SummarizeColumnsResponse"},
+							},
+						},
+					},
+				},
+			},
+			"400": map[string]interface{}{
+				"description": "Bad request",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"403": map[string]interface{}{
+				"description": "Forbidden",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"404": map[string]interface{}{
+				"description": "Table not found",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// generateViewColumnsOperation generates the GET /view/{name}/columns operation spec.
+func (h *OpenAPIHandler) generateViewColumnsOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Schema"},
+		"summary":     "Get view column schema",
+		"description": "Returns column names, types, and optional statistics for a view. Only api_* prefixed views are accessible. Use format=transform for json_transform() compatibility.",
+		"operationId": "getViewColumns",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "name",
+				"in":          "path",
+				"required":    true,
+				"description": "Name of the view (must start with api_)",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "api_active_users",
+			},
+			{
+				"name":        "format",
+				"in":          "query",
+				"description": "Response format: 'standard' (default) for LLMs/analysts, 'transform' for DuckDB json_transform(), 'summarize' for full statistics",
+				"schema": map[string]interface{}{
+					"type":    "string",
+					"enum":    []string{"standard", "transform", "summarize"},
+					"default": "standard",
+				},
+			},
+			{
+				"name":        "stats",
+				"in":          "query",
+				"description": "Include column statistics (min, max, approx_unique, null_percentage). Automatically true for format=summarize.",
+				"schema": map[string]interface{}{
+					"type":    "boolean",
+					"default": false,
+				},
+			},
+			{
+				"name":        "sample",
+				"in":          "query",
+				"description": "Maximum rows to sample for statistics calculation",
+				"schema": map[string]interface{}{
+					"type":    "integer",
+					"default": 10000,
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Column schema retrieved successfully",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"oneOf": []map[string]interface{}{
+								{"$ref": "#/components/schemas/StandardColumnsResponse"},
+								{"$ref": "#/components/schemas/TransformColumnsResponse"},
+								{"$ref": "#/components/schemas/SummarizeColumnsResponse"},
+							},
+						},
+					},
+				},
+			},
+			"400": map[string]interface{}{
+				"description": "Bad request",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"403": map[string]interface{}{
+				"description": "Forbidden",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"404": map[string]interface{}{
+				"description": "View not found",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 // generateComponents generates the components section of the OpenAPI spec.
 func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 	return map[string]interface{}{
@@ -1299,6 +1564,28 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 					},
 				},
 			},
+			"TableListResponse": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"tables": map[string]interface{}{
+						"type":        "array",
+						"description": "List of available tables",
+						"items": map[string]interface{}{
+							"$ref": "#/components/schemas/TableInfo",
+						},
+					},
+				},
+			},
+			"TableInfo": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Table name",
+						"example":     "users",
+					},
+				},
+			},
 			"GroupByResponse": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1367,6 +1654,166 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"type":        "integer",
 						"description": "Number of records per page",
 						"example":     100,
+					},
+				},
+			},
+			"StandardColumnsResponse": map[string]interface{}{
+				"type":        "object",
+				"description": "Standard format for LLMs and analysts discovering table structure",
+				"required":    []string{"table", "columns"},
+				"properties": map[string]interface{}{
+					"table": map[string]interface{}{
+						"type":        "string",
+						"description": "Table or view name",
+						"example":     "works",
+					},
+					"columns": map[string]interface{}{
+						"type":        "array",
+						"description": "List of column information",
+						"items": map[string]interface{}{
+							"$ref": "#/components/schemas/ColumnInfo",
+						},
+					},
+				},
+			},
+			"TransformColumnsResponse": map[string]interface{}{
+				"type":        "object",
+				"description": "Transform format for DuckDB json_transform() structure parameter",
+				"required":    []string{"table", "columns"},
+				"properties": map[string]interface{}{
+					"table": map[string]interface{}{
+						"type":        "string",
+						"description": "Table or view name",
+						"example":     "works",
+					},
+					"columns": map[string]interface{}{
+						"type":        "object",
+						"description": "Column names mapped to DuckDB type strings",
+						"additionalProperties": map[string]interface{}{
+							"type": "string",
+						},
+						"example": map[string]interface{}{
+							"work_id":        "BIGINT",
+							"title":          "VARCHAR",
+							"cited_by_count": "INTEGER",
+						},
+					},
+				},
+			},
+			"SummarizeColumnsResponse": map[string]interface{}{
+				"type":        "object",
+				"description": "Summarize format with full statistics from SUMMARIZE",
+				"required":    []string{"table", "total_rows", "sample_size", "columns"},
+				"properties": map[string]interface{}{
+					"table": map[string]interface{}{
+						"type":        "string",
+						"description": "Table or view name",
+						"example":     "works",
+					},
+					"total_rows": map[string]interface{}{
+						"type":        "integer",
+						"description": "Total number of rows in the table",
+						"example":     476951866,
+					},
+					"sample_size": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of rows sampled for statistics",
+						"example":     10000,
+					},
+					"columns": map[string]interface{}{
+						"type":        "array",
+						"description": "List of column information with statistics",
+						"items": map[string]interface{}{
+							"$ref": "#/components/schemas/ColumnInfoWithStats",
+						},
+					},
+				},
+			},
+			"ColumnInfo": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Column name",
+						"example":     "work_id",
+					},
+					"type": map[string]interface{}{
+						"type":        "string",
+						"description": "DuckDB data type",
+						"example":     "BIGINT",
+					},
+					"nullable": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Whether the column allows NULL values",
+						"example":     false,
+					},
+				},
+			},
+			"ColumnInfoWithStats": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Column name",
+						"example":     "work_id",
+					},
+					"type": map[string]interface{}{
+						"type":        "string",
+						"description": "DuckDB data type",
+						"example":     "BIGINT",
+					},
+					"nullable": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Whether the column allows NULL values",
+						"example":     false,
+					},
+					"stats": map[string]interface{}{
+						"$ref": "#/components/schemas/ColumnStats",
+					},
+				},
+			},
+			"ColumnStats": map[string]interface{}{
+				"type":        "object",
+				"description": "Column statistics from SUMMARIZE",
+				"properties": map[string]interface{}{
+					"min": map[string]interface{}{
+						"description": "Minimum value in the column",
+					},
+					"max": map[string]interface{}{
+						"description": "Maximum value in the column",
+					},
+					"approx_unique": map[string]interface{}{
+						"type":        "integer",
+						"description": "Approximate number of unique values",
+						"example":     10000,
+					},
+					"count_sample": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of non-null values in the sample",
+						"example":     10000,
+					},
+					"avg": map[string]interface{}{
+						"type":        "number",
+						"description": "Average value (numeric columns only)",
+						"example":     500000.5,
+					},
+					"std": map[string]interface{}{
+						"type":        "number",
+						"description": "Standard deviation (numeric columns only)",
+					},
+					"q25": map[string]interface{}{
+						"description": "25th percentile value",
+					},
+					"q50": map[string]interface{}{
+						"description": "50th percentile (median) value",
+					},
+					"q75": map[string]interface{}{
+						"description": "75th percentile value",
+					},
+					"null_percentage": map[string]interface{}{
+						"type":        "number",
+						"description": "Percentage of NULL values (0.0 to 100.0)",
+						"example":     0.0,
 					},
 				},
 			},

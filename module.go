@@ -81,6 +81,7 @@ type DuckDB struct {
 	openAPIHandler *handlers.OpenAPIHandler
 	macroHandler   *handlers.MacroHandler
 	viewHandler    *handlers.ViewHandler
+	columnsHandler *handlers.ColumnsHandler
 	routePrefix    string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
 }
 
@@ -165,6 +166,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	d.openAPIHandler = handlers.NewOpenAPIHandler()
 	d.macroHandler = handlers.NewMacroHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
 	d.viewHandler = handlers.NewViewHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
+	d.columnsHandler = handlers.NewColumnsHandler(d.dbMgr, d.authorizer, d.logger)
 
 	d.logger.Info("DuckDB module provisioned",
 		zap.String("route_prefix", d.routePrefix),
@@ -273,11 +275,21 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		// Macro execution endpoint
 		d.macroHandler.ServeHTTP(w, r)
 		return nil
-	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/view") {
+	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/view/") {
+		// Check for /columns suffix BEFORE routing to view handler
+		if strings.HasSuffix(r.URL.Path, "/columns") {
+			d.columnsHandler.ServeHTTP(w, r)
+			return nil
+		}
 		// View query endpoint
 		d.viewHandler.ServeHTTP(w, r)
 		return nil
 	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/api/") {
+		// Check for /columns suffix BEFORE routing to CRUD handler
+		if strings.HasSuffix(r.URL.Path, "/columns") {
+			d.columnsHandler.ServeHTTP(w, r)
+			return nil
+		}
 		// CRUD operations endpoint
 		d.crudHandler.ServeHTTP(w, r)
 		return nil

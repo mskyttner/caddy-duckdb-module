@@ -37,11 +37,12 @@ func TestWriteCSV_BasicOutput(t *testing.T) {
 	if rec.Code != 200 {
 		t.Errorf("Expected status 200, got %d", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "text/csv" {
-		t.Errorf("Expected Content-Type 'text/csv', got '%s'", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Errorf("Expected Content-Type 'text/csv; charset=utf-8', got '%s'", ct)
 	}
-	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
-		t.Errorf("Expected Content-Disposition with attachment, got '%s'", cd)
+	// WriteCSV does not set Content-Disposition (for streaming API use)
+	if cd := rec.Header().Get("Content-Disposition"); cd != "" {
+		t.Errorf("Expected no Content-Disposition for streaming, got '%s'", cd)
 	}
 
 	// Parse CSV output
@@ -64,6 +65,44 @@ func TestWriteCSV_BasicOutput(t *testing.T) {
 	// Check data rows (3 test records)
 	if len(records) != 4 { // header + 3 data rows
 		t.Errorf("Expected 4 rows (1 header + 3 data), got %d", len(records))
+	}
+}
+
+func TestWriteCSVDownload(t *testing.T) {
+	db, err := createTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	if err := createTestTable(db); err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+	if err := insertTestData(db); err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	rows, err := getTestRows(db)
+	if err != nil {
+		t.Fatalf("Failed to get test rows: %v", err)
+	}
+	defer rows.Close()
+
+	rec := httptest.NewRecorder()
+	err = WriteCSVDownload(rec, rows, "my_data.csv")
+	if err != nil {
+		t.Fatalf("WriteCSVDownload failed: %v", err)
+	}
+
+	// Verify response headers include Content-Disposition for download
+	if rec.Code != 200 {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Errorf("Expected Content-Type 'text/csv; charset=utf-8', got '%s'", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, "my_data.csv") {
+		t.Errorf("Expected Content-Disposition with attachment and filename, got '%s'", cd)
 	}
 }
 
