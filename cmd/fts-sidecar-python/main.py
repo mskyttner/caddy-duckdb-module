@@ -8,7 +8,7 @@ can proxy requests to for the /find endpoint.
 
 Endpoints:
     GET  /health           - Health check
-    GET  /search           - Full-text search
+    GET  /search           - Full-text search (add autocomplete=true for minimal response)
     POST /index            - Create/update FTS index
     GET  /indexes          - List indexed tables
     DELETE /index?table=X  - Delete an index
@@ -93,6 +93,10 @@ class IndexRequest(BaseModel):
     source: str
     fts_columns: list[str]
     replace: bool = False
+    # Autocomplete field mappings (optional - for minimal response mode)
+    id_field: str | None = None       # Field to use as 'id' in autocomplete
+    display_field: str | None = None  # Field to use as 'display' in autocomplete
+    hint_fields: list[str] | None = None  # Fields to combine into 'hint'
 
 
 class IndexResponse(BaseModel):
@@ -109,6 +113,10 @@ class TableMeta(BaseModel):
     fts_columns: list[str]
     row_count: int
     indexed_at: str
+    # Autocomplete field mappings (optional - for minimal response mode)
+    id_field: str | None = None           # Field to use as 'id' in autocomplete
+    display_field: str | None = None      # Field to use as 'display' in autocomplete
+    hint_fields: list[str] | None = None  # Fields to combine into 'hint'
 
 
 # FTS Service
@@ -212,6 +220,9 @@ class FTSService:
         source_path: str,
         fts_columns: list[str],
         replace: bool = False,
+        id_field: str | None = None,
+        display_field: str | None = None,
+        hint_fields: list[str] | None = None,
     ) -> tuple[int, int]:
         """Create a new FTS index from a parquet file."""
         if self.db is None:
@@ -263,6 +274,9 @@ class FTSService:
             fts_columns=fts_columns,
             row_count=row_count,
             indexed_at=datetime.now().isoformat(),
+            id_field=id_field,
+            display_field=display_field,
+            hint_fields=hint_fields,
         )
 
         index_time_ms = int((time.time() - start_time) * 1000)
@@ -289,6 +303,86 @@ class FTSService:
     def list_indexes(self) -> list[TableMeta]:
         """List all indexed tables."""
         return list(self.tables_meta.values())
+
+    def autocomplete(
+        self,
+        table_name: str,
+        query: str,
+        limit: int = 10,
+        filter_expr: str | None = None,
+    ) -> list[dict]:
+        """Perform autocomplete search with minimal response."""
+        if table_name not in self.tables:
+            raise ValueError(f"Table '{table_name}' not found")
+
+        table = self.tables[table_name]
+        meta = self.tables_meta[table_name]
+
+        # Build search query - use prefix-style matching
+        # Tantivy supports prefix queries with wildcards
+        search_query = query
+        if not query.endswith("*"):
+            search_query = f"{query}*"
+
+        try:
+            search_builder = table.search(search_query, query_type="fts")
+            search_builder = search_builder.limit(limit)
+            results_df = search_builder.to_pandas()
+        except Exception as e:
+            # Fall back to regular FTS if prefix search fails
+            logger.debug(f"Prefix search failed, falling back to FTS: {e}")
+            search_builder = table.search(query, query_type="fts")
+            search_builder = search_builder.limit(limit)
+            results_df = search_builder.to_pandas()
+
+        # Map results to autocomplete format
+        results = []
+        for _, row in results_df.iterrows():
+            result = {}
+
+            # Get ID field
+            if meta.id_field and meta.id_field in row:
+                result["id"] = str(row[meta.id_field])
+            elif "id" in row:
+                result["id"] = str(row["id"])
+            elif "pid" in row:
+                result["id"] = str(row["pid"])
+            else:
+                # Use first column as fallback
+                result["id"] = str(row.iloc[0]) if len(row) > 0 else ""
+
+            # Get display field
+            if meta.display_field and meta.display_field in row:
+                result["display"] = str(row[meta.display_field] or "")
+            elif "Title" in row:
+                result["display"] = str(row["Title"] or "")
+            elif "display_name" in row:
+                result["display"] = str(row["display_name"] or "")
+            elif "name" in row:
+                result["display"] = str(row["name"] or "")
+            else:
+                result["display"] = ""
+
+            # Build hint from configured fields
+            if meta.hint_fields:
+                hint_parts = []
+                for field in meta.hint_fields:
+                    if field in row and row[field]:
+                        value = str(row[field])
+                        # Truncate long values
+                        if len(value) > 50:
+                            value = value[:47] + "..."
+                        hint_parts.append(value)
+                if hint_parts:
+                    result["hint"] = ", ".join(hint_parts)
+
+            # Include relevance score
+            if "_score" in row:
+                result["_score"] = float(row["_score"])
+
+            results.append(result)
+
+        return results
 
 
 # Create service instance
@@ -337,8 +431,16 @@ async def search_get(
     columns: str | None = Query(None, description="Comma-separated columns to return"),
     filter: str | None = Query(None, description="SQL filter expression"),
     highlight: bool = Query(False, description="Highlight matches"),
-) -> SearchResponse:
-    """Perform full-text search (GET)."""
+    autocomplete: bool = Query(False, description="Return minimal autocomplete response"),
+):
+    """
+    Perform full-text search (GET).
+
+    With autocomplete=true, returns a minimal response with only id, display, hint fields.
+    Configure field mappings when creating the index.
+    """
+    if autocomplete:
+        return await _do_autocomplete(query=q, table=table, limit=min(limit, 10), filter_expr=filter)
     return await _do_search(
         query=q,
         table=table,
@@ -407,6 +509,43 @@ async def _do_search(
     )
 
 
+async def _do_autocomplete(
+    query: str,
+    table: str,
+    limit: int,
+    filter_expr: str | None,
+):
+    """Internal autocomplete implementation - returns minimal response."""
+    start_time = time.time()
+
+    meta = fts_service.tables_meta.get(table)
+    if meta is None:
+        raise HTTPException(status_code=404, detail=f"Table '{table}' not found")
+
+    try:
+        results = fts_service.autocomplete(
+            table_name=table,
+            query=query,
+            limit=limit,
+            filter_expr=filter_expr,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Autocomplete error: {e}")
+        raise HTTPException(status_code=500, detail=f"Autocomplete failed: {e}")
+
+    execution_time_ms = int((time.time() - start_time) * 1000)
+
+    return {
+        "query": query,
+        "table": table,
+        "results": results,
+        "count": len(results),
+        "execution_time_ms": execution_time_ms,
+    }
+
+
 @app.post("/index", status_code=201)
 async def create_index(request: IndexRequest) -> IndexResponse:
     """Create or update an FTS index."""
@@ -416,6 +555,9 @@ async def create_index(request: IndexRequest) -> IndexResponse:
             source_path=request.source,
             fts_columns=request.fts_columns,
             replace=request.replace,
+            id_field=request.id_field,
+            display_field=request.display_field,
+            hint_fields=request.hint_fields,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

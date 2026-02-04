@@ -76,6 +76,7 @@ func (h *FTSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	columns := r.URL.Query().Get("columns")
 	filter := r.URL.Query().Get("filter")
 	highlight := r.URL.Query().Get("highlight")
+	autocomplete := r.URL.Query().Get("autocomplete")
 
 	// Validate required parameters
 	if query == "" {
@@ -129,6 +130,9 @@ func (h *FTSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if highlight != "" {
 		proxyQuery.Set("highlight", highlight)
+	}
+	if autocomplete != "" {
+		proxyQuery.Set("autocomplete", autocomplete)
 	}
 	proxyURL.RawQuery = proxyQuery.Encode()
 
