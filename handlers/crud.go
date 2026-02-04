@@ -39,7 +39,13 @@ func (h *CRUDHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Extract table name from path: /duckdb/api/{table}
 	tableName := auth.ExtractTableName(r.URL.Path)
+
+	// If no table name, list all tables (GET only)
 	if tableName == "" {
+		if r.Method == http.MethodGet {
+			h.listTables(w, r)
+			return
+		}
 		h.sendErrorWithRequest(w, r, "Invalid path: table name required", http.StatusBadRequest)
 		return
 	}
@@ -83,6 +89,34 @@ func (h *CRUDHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.sendErrorWithRequest(w, r, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// listTables returns a list of all available tables.
+func (h *CRUDHandler) listTables(w http.ResponseWriter, r *http.Request) {
+	requestID := auth.GetRequestIDFromContext(r.Context())
+
+	tables, err := h.dbMgr.ListTables()
+	if err != nil {
+		h.logger.Error("Failed to list tables", zap.Error(err), zap.String("request_id", requestID))
+		h.sendErrorWithRequest(w, r, "Failed to list tables", http.StatusInternalServerError)
+		return
+	}
+
+	// Filter out internal auth tables from the list
+	filteredTables := make([]database.TableInfo, 0, len(tables))
+	for _, t := range tables {
+		if !auth.IsInternalTable(t.Name) {
+			filteredTables = append(filteredTables, t)
+		}
+	}
+
+	response := map[string]interface{}{
+		"tables": filteredTables,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 // handleHead handles HEAD requests - returns headers only without body.

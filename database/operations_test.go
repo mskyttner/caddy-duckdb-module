@@ -357,3 +357,105 @@ func TestSortToSQL(t *testing.T) {
 		}
 	}
 }
+
+func setupPublicationsManager(t *testing.T) *Manager {
+	cfg := Config{
+		MainDBPath:   ":memory:",
+		AuthDBPath:   ":memory:",
+		Threads:      1,
+		AccessMode:   "read_write",
+		QueryTimeout: 30 * time.Second,
+		Logger:       zap.NewNop(),
+	}
+
+	mgr, err := NewManagerForTesting(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create manager: %v", err)
+	}
+
+	// Create a publications table
+	_, err = mgr.ExecMain(`
+		CREATE TABLE publications (
+			id VARCHAR PRIMARY KEY,
+			title VARCHAR,
+			authors VARCHAR,
+			publication_year INTEGER,
+			doi VARCHAR,
+			abstract VARCHAR
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create publications table: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	return mgr
+}
+
+func TestPublicationInsertAndDelete(t *testing.T) {
+	mgr := setupPublicationsManager(t)
+	defer mgr.Close()
+
+	// Insert a publication
+	publication := map[string]interface{}{
+		"id":               "W12345",
+		"title":            "Test Publication Title",
+		"authors":          "John Doe, Jane Smith",
+		"publication_year": 2024,
+		"doi":              "10.1234/test.2024.001",
+		"abstract":         "This is a test abstract for the publication.",
+	}
+
+	result, err := mgr.Insert("publications", publication)
+	if err != nil {
+		t.Fatalf("Insert publication failed: %v", err)
+	}
+
+	if result.RowsAffected != 1 {
+		t.Errorf("Expected 1 row affected on insert, got %d", result.RowsAffected)
+	}
+
+	// Verify publication was inserted
+	var count int
+	err = mgr.QueryRowScanMain("SELECT COUNT(*) FROM publications WHERE id = 'W12345'", []interface{}{&count})
+	if err != nil {
+		t.Fatalf("Failed to count publications: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 publication after insert, got %d", count)
+	}
+
+	// Verify the data is correct
+	var title string
+	err = mgr.QueryRowScanMain("SELECT title FROM publications WHERE id = 'W12345'", []interface{}{&title})
+	if err != nil {
+		t.Fatalf("Failed to query publication title: %v", err)
+	}
+	if title != "Test Publication Title" {
+		t.Errorf("Expected title 'Test Publication Title', got '%s'", title)
+	}
+
+	// Delete the publication
+	where := map[string]interface{}{
+		"id": "W12345",
+	}
+
+	deleteResult, err := mgr.Delete("publications", where)
+	if err != nil {
+		t.Fatalf("Delete publication failed: %v", err)
+	}
+
+	if deleteResult.RowsAffected != 1 {
+		t.Errorf("Expected 1 row affected on delete, got %d", deleteResult.RowsAffected)
+	}
+
+	// Verify publication was deleted
+	err = mgr.QueryRowScanMain("SELECT COUNT(*) FROM publications WHERE id = 'W12345'", []interface{}{&count})
+	if err != nil {
+		t.Fatalf("Failed to count publications after delete: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Expected 0 publications after delete, got %d", count)
+	}
+}

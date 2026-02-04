@@ -434,9 +434,15 @@ func TestCRUDHandler_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestCRUDHandler_EmptyPath(t *testing.T) {
-	handler, _, cleanup := setupTestHandler(t)
+func TestCRUDHandler_ListTables(t *testing.T) {
+	handler, mgr, cleanup := setupTestHandler(t)
 	defer cleanup()
+
+	// Create an additional table to verify listing
+	_, err := mgr.ExecMain(`CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR)`)
+	if err != nil {
+		t.Fatalf("Failed to create products table: %v", err)
+	}
 
 	req := httptest.NewRequest("GET", "/duckdb/api/", nil)
 	req = addAuthContext(req, "admin")
@@ -444,8 +450,48 @@ func TestCRUDHandler_EmptyPath(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200 for table listing, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	tables, ok := result["tables"].([]interface{})
+	if !ok {
+		t.Fatal("Expected 'tables' array in response")
+	}
+
+	// Should contain test_users and products (but NOT internal auth tables)
+	if len(tables) < 2 {
+		t.Errorf("Expected at least 2 tables, got %d", len(tables))
+	}
+
+	// Verify that internal auth tables are not included
+	for _, table := range tables {
+		tableMap := table.(map[string]interface{})
+		name := tableMap["name"].(string)
+		if name == "api_keys" || name == "roles" || name == "permissions" {
+			t.Errorf("Internal auth table '%s' should not be listed", name)
+		}
+	}
+}
+
+func TestCRUDHandler_ListTables_MethodNotAllowed(t *testing.T) {
+	handler, _, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	// POST to /duckdb/api/ without table name should return 400
+	req := httptest.NewRequest("POST", "/duckdb/api/", nil)
+	req = addAuthContext(req, "admin")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("Expected status 400 for empty table name, got %d", rec.Code)
+		t.Errorf("Expected status 400 for POST without table name, got %d", rec.Code)
 	}
 }
 
@@ -464,8 +510,8 @@ func TestCRUDHandler_Read_CSVFormat(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", rec.Code)
 	}
 
-	if ct := rec.Header().Get("Content-Type"); ct != "text/csv" {
-		t.Errorf("Expected Content-Type 'text/csv', got '%s'", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Errorf("Expected Content-Type 'text/csv; charset=utf-8', got '%s'", ct)
 	}
 }
 

@@ -786,6 +786,11 @@ type ViewInfo struct {
 	Name string `json:"name"`
 }
 
+// TableInfo represents information about a table.
+type TableInfo struct {
+	Name string `json:"name"`
+}
+
 // ListAPIMacros returns all table macros with api_ prefix in the main schema.
 func (m *Manager) ListAPIMacros() ([]MacroInfo, error) {
 	query := `
@@ -872,6 +877,42 @@ func (m *Manager) ExecuteMacro(name string, params map[string]string, limit, off
 	}
 
 	return m.QueryMain(query, paramValues...)
+}
+
+// ListTables returns all user tables in the main schema.
+// Excludes internal system tables.
+func (m *Manager) ListTables() ([]TableInfo, error) {
+	query := `
+		SELECT table_name
+		FROM information_schema.tables
+		WHERE table_schema = 'main'
+		  AND table_type = 'BASE TABLE'
+		ORDER BY table_name
+	`
+
+	rows, err := m.QueryMain(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tables: %w", err)
+	}
+	defer rows.Close()
+
+	tables := make([]TableInfo, 0)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("failed to scan table info: %w", err)
+		}
+
+		tables = append(tables, TableInfo{
+			Name: name,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating tables: %w", err)
+	}
+
+	return tables, nil
 }
 
 // ListAPIViews returns all views with api_ prefix in the main schema.
@@ -1067,6 +1108,239 @@ func (m *Manager) SelectGroupBy(table, groupByCol string, filters []Filter) ([]G
 	}
 
 	return results, nil
+}
+
+// ColumnSchema represents schema information for a single column.
+type ColumnSchema struct {
+	Name     string
+	Type     string
+	Nullable bool
+}
+
+// ColumnStats represents statistics for a single column from SUMMARIZE.
+type ColumnStats struct {
+	ColumnName     string
+	ColumnType     string
+	Min            interface{}
+	Max            interface{}
+	ApproxUnique   int64
+	Avg            *float64
+	Std            *float64
+	Q25            interface{}
+	Q50            interface{}
+	Q75            interface{}
+	Count          int64
+	NullPercentage float64
+}
+
+// TableSummary represents the complete table summary including stats and row count.
+type TableSummary struct {
+	TotalRows  int64
+	SampleSize int
+	Columns    []ColumnStats
+}
+
+// GetTableSchema returns column names, types, and nullability from information_schema.
+func (m *Manager) GetTableSchema(table string) ([]ColumnSchema, error) {
+	query := `
+		SELECT column_name, data_type,
+		       CASE WHEN is_nullable = 'YES' THEN true ELSE false END as nullable
+		FROM information_schema.columns
+		WHERE table_name = $1
+		ORDER BY ordinal_position`
+
+	rows, err := m.QueryMain(query, table)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table schema: %w", err)
+	}
+	defer rows.Close()
+
+	var columns []ColumnSchema
+	for rows.Next() {
+		var col ColumnSchema
+		if err := rows.Scan(&col.Name, &col.Type, &col.Nullable); err != nil {
+			return nil, fmt.Errorf("failed to scan column info: %w", err)
+		}
+		columns = append(columns, col)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating columns: %w", err)
+	}
+
+	return columns, nil
+}
+
+// GetViewSchema returns column info for a view using DESCRIBE.
+// Views don't have entries in information_schema.columns, so we use DESCRIBE.
+func (m *Manager) GetViewSchema(viewName string) ([]ColumnSchema, error) {
+	// DESCRIBE returns: column_name, column_type, null, key, default, extra
+	query := fmt.Sprintf("DESCRIBE (FROM %s LIMIT 0)", QuoteIdentifier(viewName))
+	rows, err := m.QueryMain(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe view: %w", err)
+	}
+	defer rows.Close()
+
+	var columns []ColumnSchema
+	for rows.Next() {
+		var name, colType, nullStr string
+		var key, defaultVal, extra interface{}
+		if err := rows.Scan(&name, &colType, &nullStr, &key, &defaultVal, &extra); err != nil {
+			return nil, fmt.Errorf("failed to scan column info: %w", err)
+		}
+		columns = append(columns, ColumnSchema{
+			Name:     name,
+			Type:     colType,
+			Nullable: nullStr == "YES",
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating columns: %w", err)
+	}
+
+	return columns, nil
+}
+
+// GetTableSummary returns SUMMARIZE statistics for a table with total row count.
+func (m *Manager) GetTableSummary(table string, sampleSize int) (*TableSummary, error) {
+	// First get total row count
+	var totalRows int64
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s", QuoteIdentifier(table))
+	err := m.QueryRowScanMain(countQuery, []interface{}{&totalRows})
+	if err != nil {
+		return nil, fmt.Errorf("failed to count rows: %w", err)
+	}
+
+	// Run SUMMARIZE on a sample
+	query := fmt.Sprintf("FROM (SUMMARIZE (FROM %s LIMIT %d))", QuoteIdentifier(table), sampleSize)
+	rows, err := m.QueryMain(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to summarize table: %w", err)
+	}
+	defer rows.Close()
+
+	summary := &TableSummary{
+		TotalRows:  totalRows,
+		SampleSize: sampleSize,
+		Columns:    make([]ColumnStats, 0),
+	}
+
+	// SUMMARIZE returns: column_name, column_type, min, max, approx_unique, avg, std, q25, q50, q75, count, null_percentage
+	for rows.Next() {
+		var stats ColumnStats
+		var avg, std interface{}
+		if err := rows.Scan(
+			&stats.ColumnName,
+			&stats.ColumnType,
+			&stats.Min,
+			&stats.Max,
+			&stats.ApproxUnique,
+			&avg,
+			&std,
+			&stats.Q25,
+			&stats.Q50,
+			&stats.Q75,
+			&stats.Count,
+			&stats.NullPercentage,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan summary row: %w", err)
+		}
+
+		// Handle avg and std which may be null for non-numeric columns
+		if avg != nil {
+			if f, ok := avg.(float64); ok {
+				stats.Avg = &f
+			}
+		}
+		if std != nil {
+			if f, ok := std.(float64); ok {
+				stats.Std = &f
+			}
+		}
+
+		summary.Columns = append(summary.Columns, stats)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating summary: %w", err)
+	}
+
+	return summary, nil
+}
+
+// GetViewSummary returns SUMMARIZE statistics for a view with total row count.
+func (m *Manager) GetViewSummary(viewName string, sampleSize int) (*TableSummary, error) {
+	// First get total row count
+	var totalRows int64
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s", QuoteIdentifier(viewName))
+	err := m.QueryRowScanMain(countQuery, []interface{}{&totalRows})
+	if err != nil {
+		return nil, fmt.Errorf("failed to count rows: %w", err)
+	}
+
+	// Run SUMMARIZE on a sample
+	query := fmt.Sprintf("FROM (SUMMARIZE (FROM %s LIMIT %d))", QuoteIdentifier(viewName), sampleSize)
+	rows, err := m.QueryMain(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to summarize view: %w", err)
+	}
+	defer rows.Close()
+
+	summary := &TableSummary{
+		TotalRows:  totalRows,
+		SampleSize: sampleSize,
+		Columns:    make([]ColumnStats, 0),
+	}
+
+	// SUMMARIZE returns: column_name, column_type, min, max, approx_unique, avg, std, q25, q50, q75, count, null_percentage
+	for rows.Next() {
+		var stats ColumnStats
+		var avg, std interface{}
+		if err := rows.Scan(
+			&stats.ColumnName,
+			&stats.ColumnType,
+			&stats.Min,
+			&stats.Max,
+			&stats.ApproxUnique,
+			&avg,
+			&std,
+			&stats.Q25,
+			&stats.Q50,
+			&stats.Q75,
+			&stats.Count,
+			&stats.NullPercentage,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan summary row: %w", err)
+		}
+
+		// Handle avg and std which may be null for non-numeric columns
+		if avg != nil {
+			if f, ok := avg.(float64); ok {
+				stats.Avg = &f
+			}
+		}
+		if std != nil {
+			if f, ok := std.(float64); ok {
+				stats.Std = &f
+			}
+		}
+
+		summary.Columns = append(summary.Columns, stats)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating summary: %w", err)
+	}
+
+	return summary, nil
+}
+
+// QuoteIdentifier quotes an identifier (table/view name) for safe use in SQL.
+func QuoteIdentifier(identifier string) string {
+	// DuckDB uses double quotes for identifiers
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
 
 // ValidateColumns checks if all specified columns exist in the table schema.
