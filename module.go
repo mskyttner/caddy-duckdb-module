@@ -72,6 +72,11 @@ type DuckDB struct {
 	// Use this to load extensions, configure settings, or run initialization queries.
 	InitFilePath string `json:"init_file,omitempty"`
 
+	// FTSServiceURL is the URL of the FTS sidecar service for full-text search.
+	// If empty, the /find endpoint will not be available.
+	// Example: "http://fts-sidecar:8701"
+	FTSServiceURL string `json:"fts_service_url,omitempty"`
+
 	logger         *zap.Logger
 	dbMgr          *database.Manager
 	authorizer     *auth.Authorizer
@@ -82,6 +87,7 @@ type DuckDB struct {
 	macroHandler   *handlers.MacroHandler
 	viewHandler    *handlers.ViewHandler
 	columnsHandler *handlers.ColumnsHandler
+	ftsHandler     *handlers.FTSHandler
 	routePrefix    string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
 }
 
@@ -168,6 +174,17 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	d.viewHandler = handlers.NewViewHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
 	d.columnsHandler = handlers.NewColumnsHandler(d.dbMgr, d.authorizer, d.logger)
 
+	// Initialize FTS handler if service URL is configured
+	if d.FTSServiceURL == "" {
+		if envFTSURL := os.Getenv("DUCKDB_FTS_SERVICE_URL"); envFTSURL != "" {
+			d.FTSServiceURL = envFTSURL
+		}
+	}
+	if d.FTSServiceURL != "" {
+		d.ftsHandler = handlers.NewFTSHandler(d.FTSServiceURL, d.authorizer, d.logger)
+		d.logger.Info("FTS handler initialized", zap.String("service_url", d.FTSServiceURL))
+	}
+
 	d.logger.Info("DuckDB module provisioned",
 		zap.String("route_prefix", d.routePrefix),
 		zap.String("main_db", d.DatabasePath),
@@ -181,6 +198,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		zap.Bool("enable_object_cache", d.EnableObjectCache),
 		zap.String("temp_directory", d.TempDirectory),
 		zap.String("init_file", d.InitFilePath),
+		zap.String("fts_service_url", d.FTSServiceURL),
 	)
 
 	return nil
@@ -267,7 +285,17 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 
 	// Route based on path
-	if strings.HasPrefix(r.URL.Path, d.routePrefix+"/query") {
+	if strings.HasPrefix(r.URL.Path, d.routePrefix+"/find") {
+		// Full-text search endpoint (requires FTS sidecar)
+		if d.ftsHandler == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error":"Service Unavailable","message":"FTS service not configured. Set fts_service_url in Caddyfile or DUCKDB_FTS_SERVICE_URL environment variable.","code":503}`))
+			return nil
+		}
+		d.ftsHandler.ServeHTTP(w, r)
+		return nil
+	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/query") {
 		// Raw SQL query endpoint
 		d.queryHandler.ServeHTTP(w, r)
 		return nil
@@ -384,6 +412,10 @@ func (d *DuckDB) UnmarshalCaddyfile(dispenser *caddyfile.Dispenser) error {
 				}
 			case "init_file":
 				if !dispenser.Args(&d.InitFilePath) {
+					return dispenser.ArgErr()
+				}
+			case "fts_service_url":
+				if !dispenser.Args(&d.FTSServiceURL) {
 					return dispenser.ArgErr()
 				}
 			default:

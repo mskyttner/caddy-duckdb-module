@@ -65,3 +65,5 @@ Caddyfile.local
 
 # Swagger UI (downloaded via make swagger-ui or during Docker build)
 swagger-ui-dist/
+*.pyc
+__pycache__/

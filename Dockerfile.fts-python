@@ -1,0 +1,66 @@
+# Dockerfile for FTS Sidecar Service (Python Version)
+#
+# This builds the FTS (Full-Text Search) sidecar service using LanceDB Python.
+# The service provides FTS capabilities for the Caddy DuckDB module.
+#
+# Build:
+#   docker build -f Dockerfile.fts-python -t fts-sidecar .
+#
+# Run:
+#   docker run -p 8701:8701 -v $(pwd)/data:/data fts-sidecar
+#
+# Environment variables:
+#   FTS_PORT       - HTTP port (default: 8701)
+#   FTS_INDEX_PATH - Path to Lance indexes (default: /data/fts)
+#   FTS_LOG_LEVEL  - Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
+
+FROM python:3.12-slim-bookworm
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN groupadd -r fts && useradd -r -g fts fts
+
+# Create directories with correct ownership
+RUN mkdir -p /data/fts /app && \
+    chown -R fts:fts /data /app
+
+WORKDIR /app
+
+# Copy requirements first for better layer caching
+COPY cmd/fts-sidecar-python/requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application
+COPY --chown=fts:fts cmd/fts-sidecar-python/main.py .
+
+# Labels
+LABEL org.opencontainers.image.title="FTS Sidecar Service (Python)" \
+      org.opencontainers.image.description="Full-text search sidecar for Caddy DuckDB Module using LanceDB Python" \
+      org.opencontainers.image.source="https://github.com/tobilg/caddy-duckdb-module"
+
+# Expose default port
+EXPOSE 8701
+
+# Volume for persistent indexes
+VOLUME ["/data"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -fsS http://localhost:${FTS_PORT:-8701}/health || exit 1
+
+# Run as non-root user
+USER fts
+
+# Default environment
+ENV FTS_PORT=8701
+ENV FTS_INDEX_PATH=/data/fts
+ENV FTS_LOG_LEVEL=INFO
+
+# Entry point
+CMD ["python", "main.py"]
