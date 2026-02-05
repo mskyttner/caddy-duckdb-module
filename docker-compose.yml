@@ -27,6 +27,12 @@
 #   DUCKDB_ACCESS_MODE=read_write
 #   DUCKDB_MAX_ROWS_PER_PAGE=100
 #   DUCKDB_ABSOLUTE_MAX_ROWS=10000
+#   DUCKDB_FTS_SERVICE_URL=http://fts-sidecar:8701  (for full-text search)
+#
+# FTS Sidecar environment variables:
+#   FTS_PORT=8701
+#   FTS_INDEX_PATH=/data/fts
+#   FTS_LOG_LEVEL=info
 
 services:
   caddy-duckdb:
@@ -38,6 +44,7 @@ services:
       - "${DUCKDB_PORT:-8080}:${DUCKDB_PORT:-8080}"
     volumes:
       - duckdb-data:/data
+      - ./data/rendered_works.db:/data/main.db
     environment:
       # Timezone
       - TZ=UTC
@@ -52,6 +59,8 @@ services:
       # - DUCKDB_ACCESS_MODE=read_write
       # - DUCKDB_MAX_ROWS_PER_PAGE=100
       # - DUCKDB_ABSOLUTE_MAX_ROWS=10000
+      # FTS sidecar connection (uncomment to enable /find endpoint)
+      # - DUCKDB_FTS_SERVICE_URL=http://fts-sidecar:8701
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:${DUCKDB_PORT:-8080}${DUCKDB_ROUTE_PREFIX:-/duckdb}/health"]
@@ -66,6 +75,38 @@ services:
           memory: 2G
         reservations:
           memory: 512M
+    # Uncomment to enable FTS sidecar dependency
+    # depends_on:
+    #   fts-sidecar:
+    #     condition: service_healthy
+
+  # FTS Sidecar Service (optional - uncomment to enable full-text search)
+  # Provides the /find endpoint for full-text search using LanceDB
+  # fts-sidecar:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.fts-python
+  #   container_name: fts-sidecar
+  #   volumes:
+  #     - duckdb-data:/data
+  #   environment:
+  #     - TZ=UTC
+  #     - FTS_PORT=8701
+  #     - FTS_INDEX_PATH=/data/fts
+  #     - FTS_LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-fsS", "http://localhost:8701/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 10s
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 1G
+  #       reservations:
+  #         memory: 256M
 
 volumes:
   duckdb-data:

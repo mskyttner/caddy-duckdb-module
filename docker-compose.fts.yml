@@ -1,0 +1,67 @@
+# docker-compose.fts.yml - Full-Text Search enabled configuration
+#
+# This compose file includes the FTS sidecar service for full-text search.
+# Use this to enable the /duckdb/find endpoint.
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.fts.yml up -d
+#
+# Or use the override pattern:
+#   cp docker-compose.fts.yml docker-compose.override.yml
+#   docker-compose up -d
+#
+# IMPORTANT: Volume Permissions
+#   The FTS sidecar runs as non-root user 'fts' (for security). Both services
+#   must share the same /data volume for the sidecar to access parquet files.
+#   Ensure the FTS index directory is writable:
+#     mkdir -p data/fts && chmod 777 data/fts
+#
+#   For production, consider:
+#   - Running both containers with the same UID/GID
+#   - Using init containers to set permissions
+#   - Pre-creating indexes and mounting read-only
+#
+# First-time FTS setup:
+#   1. Start the services
+#   2. Create an FTS index from a parquet file:
+#      curl -X POST http://fts-sidecar:8701/index \
+#        -H "Content-Type: application/json" \
+#        -d '{"table": "works", "source": "/data/works.parquet", "fts_columns": ["title", "abstract"]}'
+#   3. Search via the main API:
+#      curl "http://localhost:8080/duckdb/find?q=machine+learning&table=works&limit=10" \
+#        -H "X-API-Key: your-api-key"
+
+services:
+  caddy-duckdb:
+    environment:
+      # Enable FTS by connecting to the sidecar
+      - DUCKDB_FTS_SERVICE_URL=http://fts-sidecar:8701
+    depends_on:
+      fts-sidecar:
+        condition: service_healthy
+
+  fts-sidecar:
+    build:
+      context: .
+      dockerfile: Dockerfile.fts-python
+    container_name: fts-sidecar
+    volumes:
+      - duckdb-data:/data
+    environment:
+      - TZ=UTC
+      - FTS_PORT=8701
+      - FTS_INDEX_PATH=/data/fts
+      - FTS_LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8701/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M

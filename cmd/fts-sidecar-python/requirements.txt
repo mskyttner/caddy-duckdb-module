@@ -1,0 +1,8 @@
+lancedb>=0.4.0
+pyarrow>=14.0.0
+pandas>=2.0.0
+pylance>=0.10.0
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.5.0
+tantivy>=0.20.0

@@ -58,10 +58,14 @@ tools/auth-db
 .claude/
 CLAUDE.md
 
+# Ignore docs/ except markdown files
 docs/
+!docs/*.md
 
 # Local configuration files
 Caddyfile.local
 
 # Swagger UI (downloaded via make swagger-ui or during Docker build)
 swagger-ui-dist/
+*.pyc
+__pycache__/

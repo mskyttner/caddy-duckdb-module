@@ -19,6 +19,7 @@
 #   DUCKDB_MEMORY_LIMIT       - Memory limit e.g. "4GB" (default: not set, uses 80% RAM)
 #   DUCKDB_ENABLE_OBJECT_CACHE - Enable object cache: true/false (default: not set)
 #   DUCKDB_TEMP_DIRECTORY     - Temp directory for spilling (default: not set)
+#   DUCKDB_FTS_SERVICE_URL    - FTS sidecar URL e.g. "http://fts-sidecar:8701" (default: not set)
 
 :{$DUCKDB_PORT:8080} {
 	# Serve Query UI under the API route prefix (e.g., /duckdb/ui)
@@ -63,6 +64,10 @@
 
 			# Access mode: read_only or read_write
 			access_mode {$DUCKDB_ACCESS_MODE:read_write}
+
+			# FTS sidecar URL for full-text search (/find endpoint)
+			# Uncomment or set DUCKDB_FTS_SERVICE_URL env var to enable
+			# fts_service_url {$DUCKDB_FTS_SERVICE_URL:}
 		}
 	}
 }
