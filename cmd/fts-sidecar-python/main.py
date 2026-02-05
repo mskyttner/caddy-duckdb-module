@@ -209,8 +209,28 @@ class FTSService:
             if cols_to_select:
                 results = results[cols_to_select]
 
-        # Convert to list of dicts
-        hits = results.to_dict(orient="records")
+        # Convert to list of dicts with native Python types
+        # (pandas may return numpy types that don't serialize well)
+        import numpy as np
+
+        def convert_value(v):
+            """Convert numpy/pandas types to native Python types."""
+            if v is None:
+                return None
+            if isinstance(v, (np.integer, np.floating)):
+                return v.item()
+            if isinstance(v, np.ndarray):
+                return v.tolist()
+            if isinstance(v, float) and (v != v):  # NaN check
+                return None
+            if hasattr(v, 'tolist'):  # other numpy types
+                return v.tolist()
+            return v
+
+        hits = []
+        for record in results.to_dict(orient="records"):
+            clean_record = {k: convert_value(v) for k, v in record.items()}
+            hits.append(clean_record)
 
         return hits, len(hits)
 
@@ -471,7 +491,7 @@ async def _do_search(
     offset: int,
     columns: list[str] | None,
     filter_expr: str | None,
-) -> SearchResponse:
+):
     """Internal search implementation."""
     start_time = time.time()
 
@@ -500,13 +520,14 @@ async def _do_search(
 
     execution_time_ms = int((time.time() - start_time) * 1000)
 
-    return SearchResponse(
-        query=query,
-        table=table,
-        hits=hits,
-        total_hits=total,
-        execution_time_ms=execution_time_ms,
-    )
+    # Return dict directly to avoid pydantic serialization issues with numpy types
+    return {
+        "query": query,
+        "table": table,
+        "hits": hits,
+        "total_hits": int(total),
+        "execution_time_ms": execution_time_ms,
+    }
 
 
 async def _do_autocomplete(

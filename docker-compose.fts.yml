@@ -10,13 +10,24 @@
 #   cp docker-compose.fts.yml docker-compose.override.yml
 #   docker-compose up -d
 #
+# IMPORTANT: Volume Permissions
+#   The FTS sidecar runs as non-root user 'fts' (for security). Both services
+#   must share the same /data volume for the sidecar to access parquet files.
+#   Ensure the FTS index directory is writable:
+#     mkdir -p data/fts && chmod 777 data/fts
+#
+#   For production, consider:
+#   - Running both containers with the same UID/GID
+#   - Using init containers to set permissions
+#   - Pre-creating indexes and mounting read-only
+#
 # First-time FTS setup:
 #   1. Start the services
 #   2. Create an FTS index from a parquet file:
-#      curl -X POST http://localhost:8701/index \
+#      curl -X POST http://fts-sidecar:8701/index \
 #        -H "Content-Type: application/json" \
 #        -d '{"table": "works", "source": "/data/works.parquet", "fts_columns": ["title", "abstract"]}'
-#   3. Search:
+#   3. Search via the main API:
 #      curl "http://localhost:8080/duckdb/find?q=machine+learning&table=works&limit=10" \
 #        -H "X-API-Key: your-api-key"
 
