@@ -79,7 +79,7 @@ func (a *Authorizer) AuthenticateAPIKey(apiKey string) (*APIKey, error) {
 // authenticateAPIKeyDB performs the actual database lookup for API key authentication.
 func (a *Authorizer) authenticateAPIKeyDB(apiKey string) (*APIKey, error) {
 	query := `
-		SELECT key, role_name, created_at, expires_at, is_active
+		SELECT key, role_name, COALESCE(note, ''), created_at, expires_at, is_active
 		FROM api_keys
 		WHERE key = $1 AND is_active = true
 	`
@@ -90,6 +90,7 @@ func (a *Authorizer) authenticateAPIKeyDB(apiKey string) (*APIKey, error) {
 	err := a.authDB.QueryRow(query, apiKey).Scan(
 		&key.Key,
 		&key.RoleName,
+		&key.Note,
 		&key.CreatedAt,
 		&expiresAt,
 		&key.IsActive,
@@ -200,12 +201,23 @@ func (a *Authorizer) InvalidateAPIKey(apiKey string) {
 
 // CreateAPIKey creates a new API key with the specified role.
 func (a *Authorizer) CreateAPIKey(apiKey, roleName string, expiresAt *time.Time) error {
+	return a.CreateAPIKeyWithNote(apiKey, roleName, "", expiresAt)
+}
+
+// CreateAPIKeyWithNote creates a new API key with the specified role and note.
+func (a *Authorizer) CreateAPIKeyWithNote(apiKey, roleName, note string, expiresAt *time.Time) error {
 	query := `
-		INSERT INTO api_keys (key, role_name, expires_at)
-		VALUES ($1, $2, $3)
+		INSERT INTO api_keys (key, role_name, note, expires_at)
+		VALUES ($1, $2, $3, $4)
 	`
 
-	_, err := a.authDB.Exec(query, apiKey, roleName, expiresAt)
+	// Use NULL for empty note
+	var noteValue interface{}
+	if note != "" {
+		noteValue = note
+	}
+
+	_, err := a.authDB.Exec(query, apiKey, roleName, noteValue, expiresAt)
 	if err != nil {
 		return fmt.Errorf("failed to create API key: %w", err)
 	}

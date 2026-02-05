@@ -243,6 +243,7 @@ func (m *Manager) InitAuthSchemaForTesting() error {
 		CREATE TABLE IF NOT EXISTS api_keys (
 			key VARCHAR PRIMARY KEY,
 			role_name VARCHAR NOT NULL,
+			note VARCHAR,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			expires_at TIMESTAMP,
 			is_active BOOLEAN DEFAULT true,
