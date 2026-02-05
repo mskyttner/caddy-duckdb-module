@@ -134,12 +134,14 @@ func keyCmd() *cobra.Command {
 			role, _ := cmd.Flags().GetString("role")
 			key, _ := cmd.Flags().GetString("key")
 			expires, _ := cmd.Flags().GetString("expires")
-			return runKeyAdd(role, key, expires)
+			note, _ := cmd.Flags().GetString("note")
+			return runKeyAdd(role, key, expires, note)
 		},
 	}
 	addCmd.Flags().StringP("role", "r", "", "Role name (required)")
 	addCmd.Flags().StringP("key", "k", "", "API key (if empty, generates a random one)")
 	addCmd.Flags().StringP("expires", "e", "", "Expiration date (RFC3339 format, e.g., 2025-12-31T23:59:59Z)")
+	addCmd.Flags().StringP("note", "n", "", "Note to associate with the key (e.g., user name or purpose)")
 	addCmd.MarkFlagRequired("role")
 
 	// key remove
@@ -280,6 +282,7 @@ func runInit(withDefaults bool) error {
 		CREATE TABLE IF NOT EXISTS api_keys (
 			key VARCHAR PRIMARY KEY,
 			role_name VARCHAR NOT NULL,
+			note VARCHAR,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			expires_at TIMESTAMP,
 			is_active BOOLEAN DEFAULT true,
@@ -458,7 +461,7 @@ func generateRandomKey() (string, error) {
 }
 
 // runKeyAdd adds a new API key
-func runKeyAdd(role, key, expires string) error {
+func runKeyAdd(role, key, expires, note string) error {
 	db, err := openDB()
 	if err != nil {
 		return err
@@ -490,7 +493,13 @@ func runKeyAdd(role, key, expires string) error {
 		expiresAt = &t
 	}
 
-	_, err = db.Exec("INSERT INTO api_keys (key, role_name, expires_at) VALUES (?, ?, ?)", key, role, expiresAt)
+	// Handle note - use NULL if empty
+	var noteValue interface{}
+	if note != "" {
+		noteValue = note
+	}
+
+	_, err = db.Exec("INSERT INTO api_keys (key, role_name, note, expires_at) VALUES (?, ?, ?, ?)", key, role, noteValue, expiresAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "Duplicate") {
 			return fmt.Errorf("API key already exists")
@@ -502,6 +511,9 @@ func runKeyAdd(role, key, expires string) error {
 	fmt.Println()
 	fmt.Printf("  API Key:  %s\n", key)
 	fmt.Printf("  Role:     %s\n", role)
+	if note != "" {
+		fmt.Printf("  Note:     %s\n", note)
+	}
 	fmt.Printf("  Created:  %s\n", time.Now().Format(time.RFC3339))
 	if expiresAt != nil {
 		fmt.Printf("  Expires:  %s\n", expiresAt.Format(time.RFC3339))
@@ -546,7 +558,7 @@ func runKeyList(showKeys bool) error {
 	defer db.Close()
 
 	rows, err := db.Query(`
-		SELECT key, role_name, created_at, expires_at, is_active
+		SELECT key, role_name, COALESCE(note, ''), created_at, expires_at, is_active
 		FROM api_keys
 		ORDER BY created_at DESC
 	`)
@@ -556,16 +568,16 @@ func runKeyList(showKeys bool) error {
 	defer rows.Close()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "KEY\tROLE\tCREATED\tEXPIRES\tACTIVE")
-	fmt.Fprintln(w, "---\t----\t-------\t-------\t------")
+	fmt.Fprintln(w, "KEY\tROLE\tNOTE\tCREATED\tEXPIRES\tACTIVE")
+	fmt.Fprintln(w, "---\t----\t----\t-------\t-------\t------")
 
 	count := 0
 	for rows.Next() {
-		var key, role string
+		var key, role, note string
 		var createdAt time.Time
 		var expiresAt sql.NullTime
 		var isActive bool
-		rows.Scan(&key, &role, &createdAt, &expiresAt, &isActive)
+		rows.Scan(&key, &role, &note, &createdAt, &expiresAt, &isActive)
 
 		displayKey := key
 		if !showKeys && len(key) > 8 {
@@ -582,9 +594,10 @@ func runKeyList(showKeys bool) error {
 			activeStr = "no"
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			displayKey,
 			role,
+			note,
 			createdAt.Format("2006-01-02"),
 			expiresStr,
 			activeStr,

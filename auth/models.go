@@ -6,6 +6,7 @@ import "time"
 type APIKey struct {
 	Key       string
 	RoleName  string
+	Note      string
 	CreatedAt time.Time
 	ExpiresAt *time.Time
 	IsActive  bool
