@@ -16,9 +16,10 @@
 #   DUCKDB_ABSOLUTE_MAX_ROWS  - Safety limit for unpaginated queries (default: 10000)
 #   DUCKDB_THREADS            - Number of threads (default: 4)
 #   DUCKDB_ACCESS_MODE        - read_only or read_write (default: read_write)
+#   DUCKDB_ENABLE_OBJECT_CACHE - Enable object cache: true/false (default: false)
 #   DUCKDB_MEMORY_LIMIT       - Memory limit e.g. "4GB" (default: not set, uses 80% RAM)
-#   DUCKDB_ENABLE_OBJECT_CACHE - Enable object cache: true/false (default: not set)
 #   DUCKDB_TEMP_DIRECTORY     - Temp directory for spilling (default: not set)
+#   DUCKDB_INIT_FILE          - SQL file to run on startup (default: not set)
 #   DUCKDB_FTS_SERVICE_URL    - FTS sidecar URL e.g. "http://fts-sidecar:8701" (default: not set)
 
 :{$DUCKDB_PORT:8080} {
@@ -65,9 +66,13 @@
 			# Access mode: read_only or read_write
 			access_mode {$DUCKDB_ACCESS_MODE:read_write}
 
-			# FTS sidecar URL for full-text search (/find endpoint)
-			# Uncomment or set DUCKDB_FTS_SERVICE_URL env var to enable
-			# fts_service_url {$DUCKDB_FTS_SERVICE_URL:}
+			# Enable object cache for faster repeated queries on parquet/S3 files
+			enable_object_cache {$DUCKDB_ENABLE_OBJECT_CACHE:false}
+
+			# Memory limit, temp directory, init file, and FTS service URL
+			# are read directly from env vars when not set in the Caddyfile:
+			#   DUCKDB_MEMORY_LIMIT, DUCKDB_TEMP_DIRECTORY,
+			#   DUCKDB_INIT_FILE, DUCKDB_FTS_SERVICE_URL
 		}
 	}
 }

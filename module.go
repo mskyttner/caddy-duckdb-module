@@ -132,10 +132,20 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		d.AccessMode = "read_write"
 	}
 
-	// Set init file from environment variable if not configured
+	// Set optional settings from environment variables if not configured
 	if d.InitFilePath == "" {
 		if envInitFile := os.Getenv("DUCKDB_INIT_FILE"); envInitFile != "" {
 			d.InitFilePath = envInitFile
+		}
+	}
+	if d.MemoryLimit == "" {
+		if envMemLimit := os.Getenv("DUCKDB_MEMORY_LIMIT"); envMemLimit != "" {
+			d.MemoryLimit = envMemLimit
+		}
+	}
+	if d.TempDirectory == "" {
+		if envTempDir := os.Getenv("DUCKDB_TEMP_DIRECTORY"); envTempDir != "" {
+			d.TempDirectory = envTempDir
 		}
 	}
 
