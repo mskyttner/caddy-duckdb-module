@@ -786,9 +786,11 @@ type ViewInfo struct {
 	Name string `json:"name"`
 }
 
-// TableInfo represents information about a table.
+// TableInfo represents information about a table or view accessible via /api/{name}.
 type TableInfo struct {
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`                // "table" or "view"
+	ReadOnly bool   `json:"read_only,omitempty"` // true for views
 }
 
 // ListAPIMacros returns all table macros with api_ prefix in the main schema.
@@ -879,14 +881,16 @@ func (m *Manager) ExecuteMacro(name string, params map[string]string, limit, off
 	return m.QueryMain(query, paramValues...)
 }
 
-// ListTables returns all user tables in the main schema.
-// Excludes internal system tables.
+// ListTables returns all user tables and non-api views in the main schema.
+// Excludes internal system tables. Views with api_ prefix are excluded as
+// they are served separately via the /view/ endpoint.
 func (m *Manager) ListTables() ([]TableInfo, error) {
 	query := `
-		SELECT table_name
+		SELECT table_name, table_type
 		FROM information_schema.tables
 		WHERE table_schema = 'main'
-		  AND table_type = 'BASE TABLE'
+		  AND (table_type = 'BASE TABLE'
+		    OR (table_type = 'VIEW' AND table_name NOT LIKE 'api_%'))
 		ORDER BY table_name
 	`
 
@@ -898,14 +902,21 @@ func (m *Manager) ListTables() ([]TableInfo, error) {
 
 	tables := make([]TableInfo, 0)
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, tableType string
+		if err := rows.Scan(&name, &tableType); err != nil {
 			return nil, fmt.Errorf("failed to scan table info: %w", err)
 		}
 
-		tables = append(tables, TableInfo{
+		isView := tableType == "VIEW"
+		t := TableInfo{
 			Name: name,
-		})
+			Type: "table",
+		}
+		if isView {
+			t.Type = "view"
+			t.ReadOnly = true
+		}
+		tables = append(tables, t)
 	}
 
 	if err := rows.Err(); err != nil {
