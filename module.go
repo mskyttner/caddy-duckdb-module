@@ -312,7 +312,7 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		// View query endpoint
 		d.viewHandler.ServeHTTP(w, r)
 		return nil
-	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/api/") {
+	} else if r.URL.Path == d.routePrefix+"/api" || strings.HasPrefix(r.URL.Path, d.routePrefix+"/api/") {
 		// Check for /columns suffix BEFORE routing to CRUD handler
 		if strings.HasSuffix(r.URL.Path, "/columns") {
 			d.columnsHandler.ServeHTTP(w, r)
