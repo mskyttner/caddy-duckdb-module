@@ -46,7 +46,7 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o caddy ./cmd/caddy
 FROM debian:bookworm-slim
 
 # Swagger UI version to download (can be overridden at build time)
-ARG SWAGGER_UI_VERSION=5.18.2
+ARG SWAGGER_UI_VERSION=5.31.1
 
 # Install minimal runtime dependencies
 # - ca-certificates: Required for HTTPS/TLS connections
@@ -54,14 +54,16 @@ ARG SWAGGER_UI_VERSION=5.18.2
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for security
-RUN groupadd -r caddy && useradd -r -g caddy caddy
+# Create non-root user for security (with home directory for DuckDB/Caddy config)
+RUN groupadd -r caddy && useradd -r -g caddy -m -d /home/caddy caddy
 
 # Create directories with correct ownership upfront
-RUN mkdir -p /data /app /etc/caddy /app/swagger-ui-dist /app/query-ui && \
-    chown -R caddy:caddy /data /app /etc/caddy
+RUN mkdir -p /data /app /etc/caddy /app/swagger-ui-dist /app/query-ui \
+        /home/caddy/.config/caddy /home/caddy/.local/share/caddy && \
+    chown -R caddy:caddy /data /app /etc/caddy /home/caddy
 
 WORKDIR /app
 
@@ -70,7 +72,7 @@ RUN cd /app/swagger-ui-dist && \
     for file in swagger-ui-bundle.js swagger-ui-standalone-preset.js swagger-ui.css \
                 index.html swagger-initializer.js oauth2-redirect.html \
                 favicon-16x16.png favicon-32x32.png; do \
-        curl -fsSL "https://unpkg.com/swagger-ui-dist@${SWAGGER_UI_VERSION}/${file}" -o "${file}"; \
+        curl -fsSL "https://cdn.jsdelivr.net/npm/swagger-ui-dist@${SWAGGER_UI_VERSION}/${file}" -o "${file}"; \
     done && \
     # Configure Swagger UI to use relative path (works with any route prefix)
     # From /duckdb/docs/, ../openapi.json resolves to /duckdb/openapi.json
@@ -91,6 +93,18 @@ LABEL org.opencontainers.image.title="Caddy DuckDB Module" \
       org.opencontainers.image.description="Caddy server with DuckDB REST API" \
       org.opencontainers.image.source="https://github.com/tobilg/caddy-duckdb-module" \
       org.opencontainers.image.licenses="MIT"
+
+# Install DuckDB CLI and pre-download community extensions (Lance for FTS)
+# The DuckDB version must match the version bundled in duckdb-go-bindings.
+ARG DUCKDB_VERSION=1.4.4
+RUN curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
+      -o /tmp/duckdb.zip && \
+    unzip -o /tmp/duckdb.zip -d /usr/local/bin/ && \
+    rm /tmp/duckdb.zip && \
+    chmod +x /usr/local/bin/duckdb
+# Pre-install Lance extension into caddy user's home so it's found at runtime
+RUN HOME=/home/caddy duckdb -c "INSTALL lance FROM community; LOAD lance;" && \
+    chown -R caddy:caddy /home/caddy/.duckdb
 
 # Expose default port
 EXPOSE 8080
