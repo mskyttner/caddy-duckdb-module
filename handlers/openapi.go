@@ -1658,7 +1658,7 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 				"properties": map[string]interface{}{
 					"key": map[string]interface{}{
 						"description": "The unique value of the grouped column",
-						"nullable": true,
+						"nullable":    true,
 						"oneOf": []map[string]interface{}{
 							{"type": "string"},
 							{"type": "number"},
