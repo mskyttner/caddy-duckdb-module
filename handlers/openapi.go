@@ -369,11 +369,11 @@ func (h *OpenAPIHandler) generateCreateOperation() map[string]interface{} {
 					"schema": map[string]interface{}{
 						"type": "object",
 						"additionalProperties": map[string]interface{}{
+							"nullable": true,
 							"oneOf": []map[string]interface{}{
 								{"type": "string"},
 								{"type": "number"},
 								{"type": "boolean"},
-								{"type": "null"},
 							},
 						},
 					},
@@ -799,9 +799,13 @@ func (h *OpenAPIHandler) generateMacroListOperation() map[string]interface{} {
 // generateMacroExecuteOperation generates the GET /macro/{name} operation spec.
 func (h *OpenAPIHandler) generateMacroExecuteOperation() map[string]interface{} {
 	return map[string]interface{}{
-		"tags":        []string{"Macro"},
-		"summary":     "Execute a table macro",
-		"description": "Executes a table macro with the provided parameters. Only api_* prefixed macros are accessible. Parameters are passed as query string arguments.",
+		"tags":    []string{"Macro"},
+		"summary": "Execute a table macro",
+		"description": "Executes a table macro with the provided parameters. Only api_* prefixed macros are accessible.\n\n" +
+			"**Macro parameters** are passed as additional query string arguments alongside the standard pagination params.\n" +
+			"Use `GET /macro` first to discover available macros and their parameter names.\n\n" +
+			"Example: a macro defined as `api_find(search_query, result_limit := 10)` is called as:\n" +
+			"`GET /macro/api_find?search_query=machine+learning&result_limit=5`",
 		"operationId": "executeMacro",
 		"security": []map[string]interface{}{
 			{"ApiKeyAuth": []string{}},
@@ -811,11 +815,62 @@ func (h *OpenAPIHandler) generateMacroExecuteOperation() map[string]interface{} 
 				"name":        "name",
 				"in":          "path",
 				"required":    true,
-				"description": "Name of the macro to execute (must start with api_)",
+				"description": "Name of the macro to execute (must start with api_). Use GET /macro to list available macros and their parameters.",
 				"schema": map[string]interface{}{
 					"type": "string",
 				},
-				"example": "api_search_products",
+				"example": "api_find",
+			},
+			{
+				"name":        "limit",
+				"in":          "query",
+				"required":    false,
+				"description": "Maximum number of rows to return.",
+				"schema": map[string]interface{}{
+					"type":    "integer",
+					"default": 100,
+				},
+			},
+			{
+				"name":        "page",
+				"in":          "query",
+				"required":    false,
+				"description": "Page number for offset pagination.",
+				"schema": map[string]interface{}{
+					"type":    "integer",
+					"default": 1,
+				},
+			},
+			{
+				"name":        "select",
+				"in":          "query",
+				"required":    false,
+				"description": "Comma-separated list of columns to return (sparse fieldset).",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"example": "id,title,score",
+			},
+			{
+				"name":        "links",
+				"in":          "query",
+				"required":    false,
+				"description": "Set to true to include HATEOAS navigation links in the response.",
+				"schema": map[string]interface{}{
+					"type":    "boolean",
+					"default": false,
+				},
+			},
+			{
+				"name": "<param>",
+				"in":   "query",
+				"description": "Macro-specific parameter. Any query string argument not listed above is forwarded to the macro as a named argument. " +
+					"Call GET /macro first to discover parameter names for a given macro. " +
+					"Example: `?search_query=climate+change&result_limit=20`",
+				"required": false,
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
 			},
 		},
 		"responses": map[string]interface{}{
@@ -1402,11 +1457,11 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"type":        "object",
 						"description": "Column-value pairs to update",
 						"additionalProperties": map[string]interface{}{
+							"nullable": true,
 							"oneOf": []map[string]interface{}{
 								{"type": "string"},
 								{"type": "number"},
 								{"type": "boolean"},
-								{"type": "null"},
 							},
 						},
 					},
@@ -1458,11 +1513,11 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"type":        "array",
 						"description": "Query parameters for parameterized queries",
 						"items": map[string]interface{}{
+							"nullable": true,
 							"oneOf": []map[string]interface{}{
 								{"type": "string"},
 								{"type": "number"},
 								{"type": "boolean"},
-								{"type": "null"},
 							},
 						},
 						"example": []interface{}{18},
@@ -1486,11 +1541,11 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"items": map[string]interface{}{
 							"type": "array",
 							"items": map[string]interface{}{
+								"nullable": true,
 								"oneOf": []map[string]interface{}{
 									{"type": "string"},
 									{"type": "number"},
 									{"type": "boolean"},
-									{"type": "null"},
 								},
 							},
 						},
@@ -1603,11 +1658,11 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 				"properties": map[string]interface{}{
 					"key": map[string]interface{}{
 						"description": "The unique value of the grouped column",
+						"nullable":    true,
 						"oneOf": []map[string]interface{}{
 							{"type": "string"},
 							{"type": "number"},
 							{"type": "boolean"},
-							{"type": "null"},
 						},
 					},
 					"key_display_name": map[string]interface{}{
