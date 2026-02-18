@@ -140,10 +140,11 @@ func (h *MacroHandler) executeMacro(w http.ResponseWriter, r *http.Request, macr
 	}
 
 	// Collect macro parameters from query string
-	// Skip known parameters (limit, page, links, etc.)
+	// Skip known reserved parameters so they are not forwarded to the macro
 	skipParams := map[string]bool{
 		"limit": true, "page": true, "links": true,
 		"default_format": true, "select": true,
+		"api_key": true, "cursor": true,
 	}
 
 	params := make(map[string]string)
