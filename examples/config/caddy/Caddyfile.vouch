@@ -1,0 +1,46 @@
+# Caddyfile.vouch — TLS-terminating reverse proxy with vouch-proxy SSO
+#
+# This Caddy instance:
+#   1. Terminates TLS for the public domain
+#   2. Strips the trusted header from incoming requests (spoofing prevention)
+#   3. Runs forward_auth against vouch ONLY for requests without X-API-Key
+#   4. Proxies authenticated traffic to caddy-duckdb on the internal network
+#
+# Environment variables (substituted at runtime by Caddy):
+#   {$DOMAIN}               — public hostname, e.g. api.example.com
+#   {$VOUCH_PORT}           — vouch internal port (default 9090)
+#   {$DUCKDB_PORT}          — caddy-duckdb internal port (default 8080)
+#   {$DUCKDB_ROUTE_PREFIX}  — API path prefix (default /duckdb)
+#   {$VOUCH_TRUSTED_HEADER} — header vouch injects (default X-Vouch-User)
+
+{$DOMAIN} {
+
+    # ── Security: strip trusted header from any incoming external request ──────
+    # This is the key invariant that prevents header spoofing.
+    # Caddy removes the header *before* forward_auth has a chance to re-inject it,
+    # so the only source of a valid X-Vouch-User is vouch itself.
+    request_header -{$VOUCH_TRUSTED_HEADER:X-Vouch-User}
+
+    # ── SSO path: browser clients without an API key ───────────────────────────
+    # The matcher fires when X-API-Key is absent.
+    # API key clients skip vouch entirely — no latency overhead, no cookie check.
+    @needs_sso not header X-API-Key *
+
+    forward_auth @needs_sso vouch:{$VOUCH_PORT:9090} {
+        uri /validate
+
+        # Vouch sets this header on a successful 200 response.
+        # Caddy copies it onto the upstream request to caddy-duckdb.
+        copy_headers {$VOUCH_TRUSTED_HEADER:X-Vouch-User}
+    }
+    # If vouch returns 401 the user is redirected to the OAuth login page.
+    # Vouch handles the redirect itself via its auth_url configuration.
+
+    # ── Proxy to caddy-duckdb ──────────────────────────────────────────────────
+    reverse_proxy caddy-duckdb:{$DUCKDB_PORT:8080} {
+        # Pass the real client IP for logging / rate-limiting inside the module
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

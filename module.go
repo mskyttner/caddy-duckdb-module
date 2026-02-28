@@ -77,6 +77,12 @@ type DuckDB struct {
 	// Example: "http://fts-sidecar:8701"
 	FTSServiceURL string `json:"fts_service_url,omitempty"`
 
+	// TrustedUserHeader is the name of the HTTP header that carries a pre-authenticated
+	// identity (e.g. "X-Vouch-User" set by vouch-proxy via forward_auth).
+	// When set, requests with this header bypass API key auth and are looked up
+	// in the trusted_users table. Both auth modes remain active simultaneously.
+	TrustedUserHeader string `json:"trusted_user_header,omitempty"`
+
 	logger         *zap.Logger
 	dbMgr          *database.Manager
 	authorizer     *auth.Authorizer
@@ -262,28 +268,47 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return nil
 	}
 
-	// Authenticate all other requests
-	// API key can be provided via:
-	//  1. X-API-Key header (preferred)
-	//  2. api_key query parameter
-	//  3. HTTP Basic auth with username "apikey" and password as the API key
+	// Authenticate all other requests.
+	// Two modes operate simultaneously:
+	//  1. Trusted user header (vouch-proxy / forward_auth integration) — checked first
+	//  2. API key (X-API-Key header, api_key query param, or Basic auth)
 	authenticated := false
-	apiKey := r.Header.Get("X-API-Key")
-	if apiKey == "" {
-		apiKey = r.URL.Query().Get("api_key")
-	}
-	if apiKey == "" {
-		// Check for Basic auth - username must be "apikey", password is the API key
-		if username, password, ok := r.BasicAuth(); ok && username == "apikey" {
-			apiKey = password
+
+	// --- Trusted user header auth ---
+	if d.TrustedUserHeader != "" {
+		if username := r.Header.Get(d.TrustedUserHeader); username != "" {
+			roleName, err := d.authorizer.GetRoleForTrustedUser(username)
+			if err == nil {
+				syntheticKey := &auth.APIKey{
+					Key:      username,
+					RoleName: roleName,
+					IsActive: true,
+				}
+				r = r.WithContext(auth.SetContextValues(r.Context(), syntheticKey, roleName))
+				authenticated = true
+			}
+			// If err != nil: unknown/inactive user — fall through to API key auth
 		}
 	}
-	if apiKey != "" {
-		key, err := d.authorizer.AuthenticateAPIKey(apiKey)
-		if err == nil && key != nil {
-			// Add to context
-			r = r.WithContext(auth.SetContextValues(r.Context(), key, key.RoleName))
-			authenticated = true
+
+	// --- API key auth ---
+	if !authenticated {
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey == "" {
+			apiKey = r.URL.Query().Get("api_key")
+		}
+		if apiKey == "" {
+			// Check for Basic auth - username must be "apikey", password is the API key
+			if username, password, ok := r.BasicAuth(); ok && username == "apikey" {
+				apiKey = password
+			}
+		}
+		if apiKey != "" {
+			key, err := d.authorizer.AuthenticateAPIKey(apiKey)
+			if err == nil && key != nil {
+				r = r.WithContext(auth.SetContextValues(r.Context(), key, key.RoleName))
+				authenticated = true
+			}
 		}
 	}
 
@@ -426,6 +451,10 @@ func (d *DuckDB) UnmarshalCaddyfile(dispenser *caddyfile.Dispenser) error {
 				}
 			case "fts_service_url":
 				if !dispenser.Args(&d.FTSServiceURL) {
+					return dispenser.ArgErr()
+				}
+			case "trusted_user_header":
+				if !dispenser.Args(&d.TrustedUserHeader) {
 					return dispenser.ArgErr()
 				}
 			default:

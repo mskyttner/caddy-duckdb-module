@@ -1,0 +1,149 @@
+# compose.vouch.yml — caddy-duckdb + vouch-proxy SSO integration
+#
+# Architecture:
+#
+#   Browser ──HTTPS──► Caddy (:443) ──forward_auth──► Vouch (:9090)
+#                         │                                │
+#                         │  (validated, X-Vouch-User set) │
+#                         ▼                                ▼
+#                  caddy-duckdb (:8080)           OAuth2/OIDC provider
+#                         │
+#                    auth.db (trusted_users)
+#
+# Both auth modes are active simultaneously on every endpoint:
+#   - Browser users:   no X-API-Key → Caddy runs forward_auth → vouch validates
+#                      cookie → injects X-Vouch-User → module looks up trusted_users
+#   - API clients:     send X-API-Key → forward_auth skipped → existing API key auth
+#   - Unauthenticated: no cookie, no key → vouch returns 401/redirect → OAuth login
+#
+# Setup:
+#   1. Copy examples/vouch/config.yml to ./config/vouch/config.yml and fill in
+#      your OAuth2 provider details (client_id, client_secret, provider URLs).
+#
+#   2. Obtain TLS certificates for your domain and place them in ./config/caddy/,
+#      or let Caddy manage them automatically (requires a real domain + port 443 open).
+#
+#   3. Initialise the auth database:
+#        mkdir -p data
+#        ./tools/auth-db init -d data/auth.db
+#        ./tools/auth-db key add -d data/auth.db -r admin   # for API clients
+#
+#   4. Add trusted users (the identities vouch will inject via X-Vouch-User):
+#        ./tools/auth-db user add -d data/auth.db -u alice@example.com -r reader
+#        ./tools/auth-db user add -d data/auth.db -u bob@example.com   -r editor
+#
+#   5. Start the stack:
+#        podman-compose -f examples/compose.vouch.yml up -d
+#
+# Environment variables (set in .env or shell before running):
+#   DOMAIN            — public hostname, e.g. api.example.com     (required)
+#   VOUCH_PORT        — internal vouch port                        (default: 9090)
+#   DUCKDB_PORT       — internal caddy-duckdb port                 (default: 8080)
+#   DUCKDB_ROUTE_PREFIX — API path prefix                         (default: /duckdb)
+#   VOUCH_TRUSTED_HEADER — header vouch injects                   (default: X-Vouch-User)
+
+services:
+
+  # ── Caddy (TLS termination + routing) ────────────────────────────────────────
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: caddy-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/caddy/Caddyfile.vouch:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      - DOMAIN=${DOMAIN:?DOMAIN env var is required}
+      - VOUCH_PORT=${VOUCH_PORT:-9090}
+      - DUCKDB_PORT=${DUCKDB_PORT:-8080}
+      - DUCKDB_ROUTE_PREFIX=${DUCKDB_ROUTE_PREFIX:-/duckdb}
+      - VOUCH_TRUSTED_HEADER=${VOUCH_TRUSTED_HEADER:-X-Vouch-User}
+    networks:
+      - frontend
+      - backend
+    restart: unless-stopped
+    depends_on:
+      vouch:
+        condition: service_healthy
+      caddy-duckdb:
+        condition: service_healthy
+
+  # ── Vouch-proxy (OAuth2/OIDC validation) ─────────────────────────────────────
+  vouch:
+    image: quay.io/vouch/vouch-proxy:latest
+    container_name: vouch
+    # vouch is NOT exposed to the host; only Caddy calls it on the backend network
+    expose:
+      - "${VOUCH_PORT:-9090}"
+    volumes:
+      - ./config/vouch:/config:ro
+    environment:
+      - VOUCH_PORT=${VOUCH_PORT:-9090}
+      # Vouch reads its full config from /config/config.yml (mounted above).
+      # Secrets (client_id, client_secret) can alternatively be injected here:
+      #   - VOUCH_OAUTH_CLIENT_ID=...
+      #   - VOUCH_OAUTH_CLIENT_SECRET=...
+    networks:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${VOUCH_PORT:-9090}/healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ── caddy-duckdb (REST API) ──────────────────────────────────────────────────
+  caddy-duckdb:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: caddy-duckdb
+    # Not exposed to the host; Caddy reaches it on the backend network
+    expose:
+      - "${DUCKDB_PORT:-8080}"
+    volumes:
+      - ./config/caddy-duckdb/Caddyfile.inner:/etc/caddy/Caddyfile:ro
+      - duckdb-data:/data
+    environment:
+      - TZ=UTC
+      - DUCKDB_PORT=${DUCKDB_PORT:-8080}
+      - DUCKDB_ROUTE_PREFIX=${DUCKDB_ROUTE_PREFIX:-/duckdb}
+      - DUCKDB_DATABASE_PATH=/data/main.db
+      - DUCKDB_AUTH_DATABASE_PATH=/data/auth.db
+      - DUCKDB_THREADS=4
+      - DUCKDB_MEMORY_LIMIT=2GB
+      - VOUCH_TRUSTED_HEADER=${VOUCH_TRUSTED_HEADER:-X-Vouch-User}
+    networks:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS",
+             "http://localhost:${DUCKDB_PORT:-8080}${DUCKDB_ROUTE_PREFIX:-/duckdb}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          memory: 512M
+
+networks:
+  # frontend: only caddy and (optionally) a load balancer
+  frontend:
+    driver: bridge
+  # backend: internal service-to-service traffic; not reachable from the host
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  caddy-data:
+  caddy-config:
+  duckdb-data:

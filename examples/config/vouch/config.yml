@@ -1,0 +1,105 @@
+# vouch-proxy config.yml
+#
+# Full reference: https://github.com/vouch/vouch-proxy/blob/master/config/config.yml_example
+#
+# Place this file at examples/config/vouch/config.yml and fill in your provider
+# details. Mount the directory read-only into the vouch container as /config.
+#
+# Secrets (client_id, client_secret) should ideally come from environment
+# variables rather than this file:
+#   VOUCH_OAUTH_CLIENT_ID=...
+#   VOUCH_OAUTH_CLIENT_SECRET=...
+# Those env vars override the values below when set.
+
+vouch:
+  # The public domain Caddy is serving.  Vouch uses this to set the cookie domain
+  # and to validate the callback URL.
+  domains:
+    - example.com           # ← replace with your domain
+
+  # JWT settings — change the secret to a long random string in production.
+  # Generate one with: openssl rand -hex 32
+  jwt:
+    secret: "change-me-to-a-long-random-secret"
+    issuer: vouch
+    maxAge: 240             # cookie lifetime in minutes (4 hours)
+    compress: true
+
+  cookie:
+    name: VouchCookie
+    domain: example.com     # ← replace with your domain
+    secure: true            # require HTTPS (set false only for local dev)
+    httpOnly: true
+    maxAge: 14400           # seconds = 4 hours (matches jwt.maxAge above)
+    sameSite: lax
+
+  # Header vouch sets on a successful /validate response.
+  # This must match the copy_headers directive in the outer Caddyfile and the
+  # trusted_user_header directive in the inner Caddyfile.
+  headers:
+    claims:
+      - email               # maps the OIDC "email" claim to the X-Vouch-User header
+    idtoken: false
+    accesstoken: false
+    querystring: false
+    redirect:
+      header: X-Vouch-Requested-URI
+
+  # Where to redirect after successful login
+  post_logout_redirect_uris:
+    - https://example.com/  # ← replace with your domain
+
+  # Logging
+  loglevel: info            # debug | info | warn | error
+
+# ── OAuth2 / OIDC provider ────────────────────────────────────────────────────
+# Pick ONE of the provider blocks below and remove the others.
+
+# ── Generic OIDC (Keycloak, Authentik, Dex, Auth0, etc.) ─────────────────────
+oauth:
+  provider: oidc
+  client_id: "your-client-id"           # ← replace (or use VOUCH_OAUTH_CLIENT_ID)
+  client_secret: "your-client-secret"   # ← replace (or use VOUCH_OAUTH_CLIENT_SECRET)
+
+  # Discovery URL — most providers expose this endpoint
+  # Examples:
+  #   Keycloak:  https://keycloak.example.com/realms/myrealm
+  #   Auth0:     https://your-tenant.auth0.com
+  #   Authentik: https://authentik.example.com/application/o/myapp
+  #   Dex:       https://dex.example.com
+  auth_url:     https://idp.example.com/auth          # ← replace
+  token_url:    https://idp.example.com/token         # ← replace
+  user_info_url: https://idp.example.com/userinfo     # ← replace
+
+  scopes:
+    - openid
+    - email
+    - profile
+
+  # The callback URL Caddy forwards to after OAuth login.
+  # Must match a redirect URI registered with your provider.
+  callback_urls:
+    - https://example.com/auth           # ← replace with your domain
+
+  preferredDomain: example.com          # ← replace with your domain
+
+# ── Google (alternative — replace the block above) ───────────────────────────
+# oauth:
+#   provider: google
+#   client_id: "xxx.apps.googleusercontent.com"
+#   client_secret: "your-client-secret"
+#   callback_urls:
+#     - https://example.com/auth
+#   preferredDomain: example.com
+#   scopes:
+#     - email
+
+# ── GitHub (alternative) ─────────────────────────────────────────────────────
+# oauth:
+#   provider: github
+#   client_id: "your-github-client-id"
+#   client_secret: "your-github-client-secret"
+#   callback_urls:
+#     - https://example.com/auth
+#   scopes:
+#     - user:email

@@ -138,9 +138,10 @@ func ExtractTableName(path string) string {
 // IsInternalTable checks if a table is an internal auth table.
 func IsInternalTable(tableName string) bool {
 	internalTables := map[string]bool{
-		"api_keys":    true,
-		"roles":       true,
-		"permissions": true,
+		"api_keys":      true,
+		"roles":         true,
+		"permissions":   true,
+		"trusted_users": true,
 	}
 	return internalTables[tableName]
 }
