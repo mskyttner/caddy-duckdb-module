@@ -1,0 +1,52 @@
+# Caddyfile.inner — caddy-duckdb behind the reverse proxy
+#
+# This instance only listens on the internal backend network.
+# TLS is handled by the outer Caddy; no certificates needed here.
+#
+# The trusted_user_header directive tells the module to accept the identity
+# injected by vouch-proxy (via forward_auth + copy_headers in the outer Caddy).
+#
+# Environment variables:
+#   {$DUCKDB_PORT}           — listen port (default 8080)
+#   {$DUCKDB_ROUTE_PREFIX}   — API path prefix (default /duckdb)
+#   {$VOUCH_TRUSTED_HEADER}  — trusted header name (default X-Vouch-User)
+
+:{$DUCKDB_PORT:8080} {
+
+    # Serve the interactive query UI
+    handle {$DUCKDB_ROUTE_PREFIX:/duckdb}/ui/* {
+        uri strip_prefix {$DUCKDB_ROUTE_PREFIX:/duckdb}/ui
+        root * /app/query-ui
+        file_server
+    }
+    redir {$DUCKDB_ROUTE_PREFIX:/duckdb}/ui {$DUCKDB_ROUTE_PREFIX:/duckdb}/ui/ permanent
+
+    # Serve the Swagger UI docs
+    handle {$DUCKDB_ROUTE_PREFIX:/duckdb}/docs/* {
+        uri strip_prefix {$DUCKDB_ROUTE_PREFIX:/duckdb}/docs
+        root * /app/swagger-ui-dist
+        file_server
+    }
+    redir {$DUCKDB_ROUTE_PREFIX:/duckdb}/docs {$DUCKDB_ROUTE_PREFIX:/duckdb}/docs/ permanent
+
+    # DuckDB REST API — both auth modes active simultaneously
+    route {$DUCKDB_ROUTE_PREFIX:/duckdb}/* {
+        duckdb {
+            database_path      {$DUCKDB_DATABASE_PATH:/data/main.db}
+            auth_database_path {$DUCKDB_AUTH_DATABASE_PATH:/data/auth.db}
+
+            # SSO: accept the identity header injected by vouch-proxy.
+            # The outer Caddy strips this header from external requests and
+            # re-injects it only after a successful vouch validation, so it
+            # cannot be spoofed by clients.
+            trusted_user_header {$VOUCH_TRUSTED_HEADER:X-Vouch-User}
+
+            query_timeout      {$DUCKDB_QUERY_TIMEOUT:10s}
+            max_rows_per_page  {$DUCKDB_MAX_ROWS_PER_PAGE:100}
+            absolute_max_rows  {$DUCKDB_ABSOLUTE_MAX_ROWS:10000}
+            threads            {$DUCKDB_THREADS:4}
+            access_mode        {$DUCKDB_ACCESS_MODE:read_write}
+            enable_object_cache {$DUCKDB_ENABLE_OBJECT_CACHE:false}
+        }
+    }
+}

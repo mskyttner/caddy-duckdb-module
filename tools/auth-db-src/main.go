@@ -44,6 +44,7 @@ The created database can be mounted into containers via volume mounts.`,
 	rootCmd.AddCommand(keyCmd())
 	rootCmd.AddCommand(permissionCmd())
 	rootCmd.AddCommand(infoCmd())
+	rootCmd.AddCommand(userCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -305,6 +306,16 @@ func runInit(withDefaults bool) error {
 
 		-- Create sequence for permissions ID
 		CREATE SEQUENCE IF NOT EXISTS permissions_id_seq START 1;
+
+		-- Trusted users table (for vouch-proxy / forward_auth integration)
+		CREATE TABLE IF NOT EXISTS trusted_users (
+			username   VARCHAR PRIMARY KEY,
+			role_name  VARCHAR NOT NULL,
+			note       VARCHAR,
+			is_active  BOOLEAN DEFAULT true,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (role_name) REFERENCES roles(role_name)
+		);
 	`
 
 	_, err = db.Exec(schema)
@@ -753,6 +764,160 @@ func runPermissionList(role string) error {
 	return nil
 }
 
+// userCmd creates the user subcommand with add/remove/list for trusted users
+func userCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "user",
+		Short: "Manage trusted users (vouch-proxy / forward_auth integration)",
+	}
+
+	// user add
+	addCmd := &cobra.Command{
+		Use:   "add",
+		Short: "Add a trusted user",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username, _ := cmd.Flags().GetString("username")
+			role, _ := cmd.Flags().GetString("role")
+			note, _ := cmd.Flags().GetString("note")
+			return runUserAdd(username, role, note)
+		},
+	}
+	addCmd.Flags().StringP("username", "u", "", "Username / identity (e.g. alice@example.com) (required)")
+	addCmd.Flags().StringP("role", "r", "", "Role name (required)")
+	addCmd.Flags().StringP("note", "n", "", "Optional note")
+	addCmd.MarkFlagRequired("username")
+	addCmd.MarkFlagRequired("role")
+
+	// user remove
+	removeCmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove a trusted user",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username, _ := cmd.Flags().GetString("username")
+			return runUserRemove(username)
+		},
+	}
+	removeCmd.Flags().StringP("username", "u", "", "Username to remove (required)")
+	removeCmd.MarkFlagRequired("username")
+
+	// user list
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all trusted users",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runUserList()
+		},
+	}
+
+	cmd.AddCommand(addCmd, removeCmd, listCmd)
+	return cmd
+}
+
+// runUserAdd adds a trusted user
+func runUserAdd(username, role, note string) error {
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// Verify role exists
+	var exists bool
+	err = db.QueryRow("SELECT 1 FROM roles WHERE role_name = ?", role).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("role '%s' does not exist", role)
+	}
+
+	var noteValue interface{}
+	if note != "" {
+		noteValue = note
+	}
+
+	_, err = db.Exec(
+		"INSERT INTO trusted_users (username, role_name, note) VALUES (?, ?, ?)",
+		username, role, noteValue,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "Duplicate") {
+			return fmt.Errorf("trusted user '%s' already exists", username)
+		}
+		return fmt.Errorf("failed to add trusted user: %w", err)
+	}
+
+	fmt.Printf("✓ Added trusted user '%s' with role '%s'\n", username, role)
+	return nil
+}
+
+// runUserRemove removes a trusted user
+func runUserRemove(username string) error {
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	result, err := db.Exec("DELETE FROM trusted_users WHERE username = ?", username)
+	if err != nil {
+		return fmt.Errorf("failed to remove trusted user: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("trusted user '%s' not found", username)
+	}
+
+	fmt.Printf("✓ Removed trusted user '%s'\n", username)
+	return nil
+}
+
+// runUserList lists all trusted users
+func runUserList() error {
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`
+		SELECT username, role_name, COALESCE(note, ''), is_active, created_at
+		FROM trusted_users
+		ORDER BY username
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to query trusted users: %w", err)
+	}
+	defer rows.Close()
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "USERNAME\tROLE\tNOTE\tACTIVE\tCREATED")
+	fmt.Fprintln(w, "--------\t----\t----\t------\t-------")
+
+	count := 0
+	for rows.Next() {
+		var username, role, note string
+		var isActive bool
+		var createdAt time.Time
+		rows.Scan(&username, &role, &note, &isActive, &createdAt)
+
+		activeStr := "yes"
+		if !isActive {
+			activeStr = "no"
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			username, role, note, activeStr, createdAt.Format("2006-01-02"),
+		)
+		count++
+	}
+	w.Flush()
+
+	if count == 0 {
+		fmt.Println("No trusted users found.")
+	}
+
+	return nil
+}
+
 // runInfo shows database info
 func runInfo() error {
 	db, err := openDB()
@@ -761,13 +926,16 @@ func runInfo() error {
 	}
 	defer db.Close()
 
-	var roleCount, keyCount, permCount int
-	var activeKeyCount int
+	var roleCount, keyCount, permCount, userCount int
+	var activeKeyCount, activeUserCount int
 
 	db.QueryRow("SELECT COUNT(*) FROM roles").Scan(&roleCount)
 	db.QueryRow("SELECT COUNT(*) FROM api_keys").Scan(&keyCount)
 	db.QueryRow("SELECT COUNT(*) FROM api_keys WHERE is_active = true").Scan(&activeKeyCount)
 	db.QueryRow("SELECT COUNT(*) FROM permissions").Scan(&permCount)
+	// trusted_users table may not exist in older databases
+	db.QueryRow("SELECT COUNT(*) FROM trusted_users").Scan(&userCount)
+	db.QueryRow("SELECT COUNT(*) FROM trusted_users WHERE is_active = true").Scan(&activeUserCount)
 
 	fmt.Printf("Auth Database: %s\n", dbPath)
 	fmt.Println()
@@ -775,6 +943,7 @@ func runInfo() error {
 	fmt.Printf("  Roles:            %d\n", roleCount)
 	fmt.Printf("  API Keys:         %d (%d active)\n", keyCount, activeKeyCount)
 	fmt.Printf("  Permissions:      %d\n", permCount)
+	fmt.Printf("  Trusted Users:    %d (%d active)\n", userCount, activeUserCount)
 
 	return nil
 }

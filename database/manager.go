@@ -168,9 +168,25 @@ func (m *Manager) initAuthSchema() error {
 		}
 	}
 
+	// Soft migration: create trusted_users table if absent (additive, idempotent)
+	var err error
+	_, err = m.authDB.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS trusted_users (
+			username   VARCHAR PRIMARY KEY,
+			role_name  VARCHAR NOT NULL,
+			note       VARCHAR,
+			is_active  BOOLEAN DEFAULT true,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (role_name) REFERENCES roles(role_name)
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create trusted_users table: %w", err)
+	}
+
 	// Validate that at least one role exists
 	var roleCount int
-	err := m.authDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM roles").Scan(&roleCount)
+	err = m.authDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM roles").Scan(&roleCount)
 	if err != nil {
 		return fmt.Errorf("failed to count roles: %w", err)
 	}
@@ -266,6 +282,16 @@ func (m *Manager) InitAuthSchemaForTesting() error {
 
 		-- Create sequence for permissions ID
 		CREATE SEQUENCE IF NOT EXISTS permissions_id_seq START 1;
+
+		-- Trusted users table (for vouch-proxy / forward_auth integration)
+		CREATE TABLE IF NOT EXISTS trusted_users (
+			username   VARCHAR PRIMARY KEY,
+			role_name  VARCHAR NOT NULL,
+			note       VARCHAR,
+			is_active  BOOLEAN DEFAULT true,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (role_name) REFERENCES roles(role_name)
+		);
 
 		-- Default roles
 		INSERT INTO roles (role_name, description)

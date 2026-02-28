@@ -23,6 +23,7 @@ go.work.sum
 
 # env file
 .env
+oidc-auth0.env
 
 # IDE-specific files
 .vscode/
@@ -46,7 +47,7 @@ Thumbs.db
 # Test data
 /data/
 /test_data/
-
+/tests_e2e/
 /caddy-with-duckdb
 
 tools/create-api-key

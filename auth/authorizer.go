@@ -14,9 +14,10 @@ const defaultCacheTTL = 5 * time.Minute
 
 // Authorizer handles authentication and authorization.
 type Authorizer struct {
-	authDB          *sql.DB
-	permissionCache *expirable.LRU[string, bool]
-	apiKeyCache     *expirable.LRU[string, *APIKey]
+	authDB           *sql.DB
+	permissionCache  *expirable.LRU[string, bool]
+	apiKeyCache      *expirable.LRU[string, *APIKey]
+	trustedUserCache *expirable.LRU[string, string]
 }
 
 // NewAuthorizer creates a new authorizer with permission and API key caching.
@@ -31,10 +32,14 @@ func NewAuthorizer(authDB *sql.DB) *Authorizer {
 	// Capacity of 500 should be sufficient for most deployments
 	apiKeyCache := expirable.NewLRU[string, *APIKey](500, nil, defaultCacheTTL)
 
+	// Create expirable LRU cache for trusted users (username -> role_name)
+	trustedUserCache := expirable.NewLRU[string, string](500, nil, defaultCacheTTL)
+
 	return &Authorizer{
-		authDB:          authDB,
-		permissionCache: permCache,
-		apiKeyCache:     apiKeyCache,
+		authDB:           authDB,
+		permissionCache:  permCache,
+		apiKeyCache:      apiKeyCache,
+		trustedUserCache: trustedUserCache,
 	}
 }
 
@@ -42,11 +47,13 @@ func NewAuthorizer(authDB *sql.DB) *Authorizer {
 func NewAuthorizerWithTTL(authDB *sql.DB, cacheTTL time.Duration) *Authorizer {
 	permCache := expirable.NewLRU[string, bool](1000, nil, cacheTTL)
 	apiKeyCache := expirable.NewLRU[string, *APIKey](500, nil, cacheTTL)
+	trustedUserCache := expirable.NewLRU[string, string](500, nil, cacheTTL)
 
 	return &Authorizer{
-		authDB:          authDB,
-		permissionCache: permCache,
-		apiKeyCache:     apiKeyCache,
+		authDB:           authDB,
+		permissionCache:  permCache,
+		apiKeyCache:      apiKeyCache,
+		trustedUserCache: trustedUserCache,
 	}
 }
 
@@ -197,6 +204,37 @@ func (a *Authorizer) InvalidateAPIKeyCache() {
 // More efficient than purging the entire cache when only one key changes.
 func (a *Authorizer) InvalidateAPIKey(apiKey string) {
 	a.apiKeyCache.Remove(apiKey)
+}
+
+// GetRoleForTrustedUser looks up the role for a trusted upstream identity.
+// Returns ("", err) if the user is unknown or inactive.
+func (a *Authorizer) GetRoleForTrustedUser(username string) (string, error) {
+	if cached, ok := a.trustedUserCache.Get(username); ok {
+		return cached, nil
+	}
+	var roleName string
+	err := a.authDB.QueryRow(`
+		SELECT role_name FROM trusted_users
+		WHERE username = $1 AND is_active = true
+	`, username).Scan(&roleName)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("unknown trusted user: %s", username)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to query trusted user: %w", err)
+	}
+	a.trustedUserCache.Add(username, roleName)
+	return roleName, nil
+}
+
+// InvalidateTrustedUserCache clears the entire trusted user cache.
+func (a *Authorizer) InvalidateTrustedUserCache() {
+	a.trustedUserCache.Purge()
+}
+
+// InvalidateTrustedUser removes a specific trusted user from the cache.
+func (a *Authorizer) InvalidateTrustedUser(username string) {
+	a.trustedUserCache.Remove(username)
 }
 
 // CreateAPIKey creates a new API key with the specified role.

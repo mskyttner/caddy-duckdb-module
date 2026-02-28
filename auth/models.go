@@ -30,6 +30,15 @@ type Permission struct {
 	CanQuery  bool
 }
 
+// TrustedUser maps an upstream identity (e.g. email from X-Vouch-User) to a role.
+type TrustedUser struct {
+	Username  string
+	RoleName  string
+	Note      string
+	IsActive  bool
+	CreatedAt time.Time
+}
+
 // Operation represents a database operation type.
 type Operation string
 
