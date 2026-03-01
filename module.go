@@ -83,18 +83,24 @@ type DuckDB struct {
 	// in the trusted_users table. Both auth modes remain active simultaneously.
 	TrustedUserHeader string `json:"trusted_user_header,omitempty"`
 
-	logger         *zap.Logger
-	dbMgr          *database.Manager
-	authorizer     *auth.Authorizer
-	authMw         *auth.Middleware
-	crudHandler    *handlers.CRUDHandler
-	queryHandler   *handlers.QueryHandler
-	openAPIHandler *handlers.OpenAPIHandler
-	macroHandler   *handlers.MacroHandler
-	viewHandler    *handlers.ViewHandler
-	columnsHandler *handlers.ColumnsHandler
-	ftsHandler     *handlers.FTSHandler
-	routePrefix    string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
+	// CORSOrigins is an optional list of allowed CORS origins for browser clients.
+	// Use "*" to allow all origins, or list exact origins.
+	// Example: ["http://localhost:5522", "https://ui.example.com"]
+	CORSOrigins []string `json:"cors_origins,omitempty"`
+
+	logger            *zap.Logger
+	dbMgr             *database.Manager
+	authorizer        *auth.Authorizer
+	authMw            *auth.Middleware
+	crudHandler       *handlers.CRUDHandler
+	queryHandler      *handlers.QueryHandler
+	openAPIHandler    *handlers.OpenAPIHandler
+	macroHandler      *handlers.MacroHandler
+	viewHandler       *handlers.ViewHandler
+	columnsHandler    *handlers.ColumnsHandler
+	ftsHandler        *handlers.FTSHandler
+	httpserverHandler *handlers.HTTPServerHandler
+	routePrefix       string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
 }
 
 // CaddyModule returns the Caddy module information.
@@ -189,6 +195,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	d.macroHandler = handlers.NewMacroHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
 	d.viewHandler = handlers.NewViewHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
 	d.columnsHandler = handlers.NewColumnsHandler(d.dbMgr, d.authorizer, d.logger)
+	d.httpserverHandler = handlers.NewHTTPServerHandler(d.dbMgr, d.authorizer, d.logger)
 
 	// Initialize FTS handler if service URL is configured
 	if d.FTSServiceURL == "" {
@@ -253,6 +260,29 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	ctx := auth.SetRequestID(r.Context(), requestID)
 	r = r.WithContext(ctx)
 	w.Header().Set("X-Request-ID", requestID)
+
+	// CORS: inject headers on all responses; handle OPTIONS preflight before auth
+	if len(d.CORSOrigins) > 0 {
+		origin := r.Header.Get("Origin")
+		if d.corsAllowed(origin) {
+			allowOrigin := origin
+			if allowOrigin == "" {
+				allowOrigin = "*"
+			}
+			w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers",
+				"X-API-Key, Authorization, Content-Type, Accept, format, "+
+					"X-ClickHouse-Format, X-Request-ID")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return nil // OPTIONS handled before auth — no key needed for preflight
+		}
+	}
 
 	// Health check endpoint (no authentication required)
 	if r.URL.Path == d.routePrefix+"/health" {
@@ -320,6 +350,13 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 
 	// Route based on path
+
+	// httpserver-compatible root endpoint: raw SQL POST to /duckdb/
+	if r.URL.Path == d.routePrefix || r.URL.Path == d.routePrefix+"/" {
+		d.httpserverHandler.ServeHTTP(w, r)
+		return nil
+	}
+
 	if strings.HasPrefix(r.URL.Path, d.routePrefix+"/find") {
 		// Full-text search endpoint (requires FTS sidecar)
 		if d.ftsHandler == nil {
@@ -457,6 +494,11 @@ func (d *DuckDB) UnmarshalCaddyfile(dispenser *caddyfile.Dispenser) error {
 				if !dispenser.Args(&d.TrustedUserHeader) {
 					return dispenser.ArgErr()
 				}
+			case "cors_origins":
+				d.CORSOrigins = dispenser.RemainingArgs()
+				if len(d.CORSOrigins) == 0 {
+					return dispenser.ArgErr()
+				}
 			default:
 				return dispenser.Errf("unknown subdirective: %s", dispenser.Val())
 			}
@@ -470,6 +512,16 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 	var d DuckDB
 	err := d.UnmarshalCaddyfile(h.Dispenser)
 	return &d, err
+}
+
+// corsAllowed reports whether the given origin is permitted by the configured CORS policy.
+func (d *DuckDB) corsAllowed(origin string) bool {
+	for _, o := range d.CORSOrigins {
+		if o == "*" || o == origin {
+			return true
+		}
+	}
+	return false
 }
 
 // Interface guards

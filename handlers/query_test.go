@@ -706,9 +706,6 @@ func TestStripSQLComments(t *testing.T) {
 }
 
 func TestContainsInternalTables(t *testing.T) {
-	// Create a minimal QueryHandler for testing
-	h := &QueryHandler{}
-
 	tests := []struct {
 		name     string
 		sql      string
@@ -938,7 +935,7 @@ func TestContainsInternalTables(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.containsInternalTables(tt.sql)
+			result := containsInternalTables(tt.sql)
 			if result != tt.expected {
 				t.Errorf("containsInternalTables(%q) = %v, want %v", tt.sql, result, tt.expected)
 			}
@@ -947,14 +944,12 @@ func TestContainsInternalTables(t *testing.T) {
 }
 
 func TestContainsInternalTables_AllInternalTables(t *testing.T) {
-	h := &QueryHandler{}
-
-	internalTables := []string{"api_keys", "roles", "permissions"}
+	internalTables := []string{"api_keys", "roles", "permissions", "trusted_users"}
 
 	for _, table := range internalTables {
 		t.Run("blocks_"+table, func(t *testing.T) {
 			sql := "SELECT * FROM " + table
-			if !h.containsInternalTables(sql) {
+			if !containsInternalTables(sql) {
 				t.Errorf("Expected containsInternalTables to block access to %s", table)
 			}
 		})
@@ -962,8 +957,6 @@ func TestContainsInternalTables_AllInternalTables(t *testing.T) {
 }
 
 func TestContainsInternalTables_CommentBypassAttempts(t *testing.T) {
-	h := &QueryHandler{}
-
 	bypassAttempts := []struct {
 		name        string
 		sql         string
@@ -1001,7 +994,7 @@ func TestContainsInternalTables_CommentBypassAttempts(t *testing.T) {
 
 	for _, tt := range bypassAttempts {
 		t.Run(tt.name, func(t *testing.T) {
-			result := h.containsInternalTables(tt.sql)
+			result := containsInternalTables(tt.sql)
 			if result != tt.shouldBlock {
 				if tt.shouldBlock {
 					t.Errorf("Expected to block %q, but it was allowed", tt.sql)
@@ -1014,22 +1007,20 @@ func TestContainsInternalTables_CommentBypassAttempts(t *testing.T) {
 }
 
 func BenchmarkContainsInternalTables(b *testing.B) {
-	h := &QueryHandler{}
 	sql := "SELECT u.*, o.* FROM users u JOIN orders o ON u.id = o.user_id WHERE u.status = 'active'"
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		h.containsInternalTables(sql)
+		containsInternalTables(sql)
 	}
 }
 
 func BenchmarkContainsInternalTables_WithComments(b *testing.B) {
-	h := &QueryHandler{}
 	sql := "SELECT /* columns */ u.*, o.* FROM users u /* user table */ JOIN orders o ON u.id = o.user_id WHERE u.status = 'active' -- filter active users"
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		h.containsInternalTables(sql)
+		containsInternalTables(sql)
 	}
 }
 
