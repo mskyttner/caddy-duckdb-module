@@ -160,6 +160,11 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 			d.TempDirectory = envTempDir
 		}
 	}
+	if len(d.CORSOrigins) == 0 {
+		if envCORS := os.Getenv("DUCKDB_CORS_ORIGINS"); envCORS != "" {
+			d.CORSOrigins = strings.Fields(envCORS)
+		}
+	}
 
 	// Validate AuthDatabasePath
 	if d.AuthDatabasePath == "" {
