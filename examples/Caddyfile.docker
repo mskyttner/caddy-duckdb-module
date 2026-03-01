@@ -21,6 +21,7 @@
 #   DUCKDB_TEMP_DIRECTORY     - Temp directory for spilling (default: not set)
 #   DUCKDB_INIT_FILE          - SQL file to run on startup (default: not set)
 #   DUCKDB_FTS_SERVICE_URL    - FTS sidecar URL e.g. "http://fts-sidecar:8701" (default: not set)
+#   DUCKDB_CORS_ORIGINS       - Space-separated allowed CORS origins, e.g. "http://localhost:5522" or "*" (default: not set)
 
 :{$DUCKDB_PORT:8080} {
 	# Serve Query UI under the API route prefix (e.g., /duckdb/ui)

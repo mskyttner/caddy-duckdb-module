@@ -319,6 +319,11 @@ func GetAcceptFormat(r *http.Request) string {
 		return format
 	}
 
+	// Check format header (duck-ui / httpserver compatible)
+	if format := r.Header.Get("format"); format != "" {
+		return format
+	}
+
 	// Check Accept header
 	accept := r.Header.Get("Accept")
 
@@ -334,6 +339,24 @@ func GetAcceptFormat(r *http.Request) string {
 
 	// Default to JSON objects format
 	return "json"
+}
+
+// GetAcceptFormatWithDefault is like GetAcceptFormat but uses the given default
+// when no format signal is present in the request (for httpserver compat).
+func GetAcceptFormatWithDefault(r *http.Request, defaultFormat string) string {
+	if noFormatSignal(r) {
+		return defaultFormat
+	}
+	return GetAcceptFormat(r)
+}
+
+// noFormatSignal returns true when the request carries no explicit format preference.
+func noFormatSignal(r *http.Request) bool {
+	return r.URL.Query().Get("default_format") == "" &&
+		r.Header.Get("X-ClickHouse-Format") == "" &&
+		r.Header.Get("format") == "" &&
+		!strings.Contains(r.Header.Get("Accept"), "application/") &&
+		!strings.Contains(r.Header.Get("Accept"), "text/")
 }
 
 // SanitizeTableName validates and sanitizes table names to prevent SQL injection.

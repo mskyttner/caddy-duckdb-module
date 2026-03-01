@@ -78,6 +78,10 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 				"description": "Table and view column schema information",
 			},
 			{
+				"name":        "Compatibility",
+				"description": "DuckDB httpserver-compatible endpoint for tools like duck-ui",
+			},
+			{
 				"name":        "OpenAPI",
 				"description": "API documentation",
 			},
@@ -90,6 +94,10 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 // generatePaths generates the paths section of the OpenAPI spec.
 func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 	return map[string]interface{}{
+		"/": map[string]interface{}{
+			"post": h.generateHTTPServerPostOperation(),
+			"head": h.generateHTTPServerHeadOperation(),
+		},
 		"/openapi.json": map[string]interface{}{
 			"get": map[string]interface{}{
 				"tags":        []string{"OpenAPI"},
@@ -1276,6 +1284,131 @@ func (h *OpenAPIHandler) generateViewColumnsOperation() map[string]interface{} {
 	}
 }
 
+// generateHTTPServerPostOperation generates the POST / operation spec.
+func (h *OpenAPIHandler) generateHTTPServerPostOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Compatibility"},
+		"summary":     "Execute a read-only SQL query (httpserver-compatible)",
+		"description": "Accepts a raw SQL string as the request body. Compatible with DuckDB httpserver clients such as duck-ui. Only read-only queries (SELECT, WITH, FROM, SHOW, DESCRIBE, EXPLAIN, PRAGMA) are allowed. Defaults to JSONCompact output format.",
+		"operationId": "httpserverQuery",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "default_format",
+				"in":          "query",
+				"description": "Output format override (e.g. JSONCompact, JSONEachRow, csv)",
+				"schema": map[string]interface{}{
+					"type": "string",
+					"enum": []string{"JSONCompact", "JSONEachRow", "json", "compact", "meta", "csv"},
+				},
+			},
+			{
+				"name":        "format",
+				"in":          "header",
+				"description": "Output format (duck-ui sends this header, e.g. JSONCompact)",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			{
+				"name":        "X-ClickHouse-Format",
+				"in":          "header",
+				"description": "Output format (ClickHouse/httpserver compatible header)",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+		},
+		"requestBody": map[string]interface{}{
+			"required":    true,
+			"description": "Raw SQL query string",
+			"content": map[string]interface{}{
+				"application/x-www-form-urlencoded": map[string]interface{}{
+					"schema": map[string]interface{}{
+						"type": "string",
+					},
+				},
+				"text/plain": map[string]interface{}{
+					"schema": map[string]interface{}{
+						"type": "string",
+					},
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Query results in requested format (default: JSONCompact)",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/JSONCompactResponse",
+						},
+					},
+					"text/csv": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"type":   "string",
+							"format": "binary",
+						},
+					},
+				},
+			},
+			"400": map[string]interface{}{
+				"description": "Bad request (empty body)",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+			"403": map[string]interface{}{
+				"description": "Forbidden (write query or internal table access attempted)",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"$ref": "#/components/schemas/ErrorResponse",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// generateHTTPServerHeadOperation generates the HEAD / operation spec.
+func (h *OpenAPIHandler) generateHTTPServerHeadOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Compatibility"},
+		"summary":     "Check endpoint availability",
+		"description": "Returns headers only (no body). Used by httpserver-compatible clients to probe endpoint availability and content type.",
+		"operationId": "httpserverHead",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Endpoint available",
+			},
+			"401": map[string]interface{}{
+				"description": "Unauthorized",
+			},
+		},
+	}
+}
+
 // generateComponents generates the components section of the OpenAPI spec.
 func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 	return map[string]interface{}{
@@ -1288,6 +1421,60 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 			},
 		},
 		"schemas": map[string]interface{}{
+			"JSONCompactResponse": map[string]interface{}{
+				"type":        "object",
+				"description": "DuckDB httpserver JSONCompact format response",
+				"required":    []string{"meta", "data", "rows"},
+				"properties": map[string]interface{}{
+					"meta": map[string]interface{}{
+						"type":        "array",
+						"description": "Column metadata",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"name": map[string]interface{}{
+									"type":    "string",
+									"example": "answer",
+								},
+								"type": map[string]interface{}{
+									"type":    "string",
+									"example": "INTEGER",
+								},
+							},
+						},
+					},
+					"data": map[string]interface{}{
+						"type":        "array",
+						"description": "Row data as arrays of values (one array per row)",
+						"items": map[string]interface{}{
+							"type":  "array",
+							"items": map[string]interface{}{"nullable": true},
+						},
+					},
+					"rows": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of rows returned",
+						"example":     1,
+					},
+					"statistics": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"elapsed": map[string]interface{}{
+								"type":    "number",
+								"example": 0.000178,
+							},
+							"rows_read": map[string]interface{}{
+								"type":    "integer",
+								"example": 1,
+							},
+							"bytes_read": map[string]interface{}{
+								"type":    "integer",
+								"example": 0,
+							},
+						},
+					},
+				},
+			},
 			"ErrorResponse": map[string]interface{}{
 				"type":     "object",
 				"required": []string{"error", "message", "code", "request_id"},

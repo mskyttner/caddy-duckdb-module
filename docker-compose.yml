@@ -28,6 +28,7 @@
 #   DUCKDB_MAX_ROWS_PER_PAGE=100
 #   DUCKDB_ABSOLUTE_MAX_ROWS=10000
 #   DUCKDB_FTS_SERVICE_URL=http://fts-sidecar:8701  (for full-text search)
+#   DUCKDB_CORS_ORIGINS=http://localhost:5522        (space-separated; use * for all origins)
 #
 # FTS Sidecar environment variables:
 #   FTS_PORT=8701
@@ -61,6 +62,8 @@ services:
       # - DUCKDB_ABSOLUTE_MAX_ROWS=10000
       # FTS sidecar connection (uncomment to enable /find endpoint)
       # - DUCKDB_FTS_SERVICE_URL=http://fts-sidecar:8701
+      # CORS origins for browser clients like duck-ui (uncomment and set as needed)
+      - DUCKDB_CORS_ORIGINS=http://localhost:5522
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:${DUCKDB_PORT:-8080}${DUCKDB_ROUTE_PREFIX:-/duckdb}/health"]

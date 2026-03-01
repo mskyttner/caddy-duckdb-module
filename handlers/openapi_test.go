@@ -164,8 +164,8 @@ func TestOpenAPIHandler_Spec_Tags(t *testing.T) {
 	if !ok {
 		t.Fatal("Expected 'tags' array in spec")
 	}
-	if len(tags) != 6 {
-		t.Errorf("Expected 6 tags, got %d", len(tags))
+	if len(tags) != 7 {
+		t.Errorf("Expected 7 tags, got %d", len(tags))
 	}
 
 	// Verify tag names
