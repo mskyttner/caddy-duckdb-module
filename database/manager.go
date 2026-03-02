@@ -168,20 +168,43 @@ func (m *Manager) initAuthSchema() error {
 		}
 	}
 
-	// Soft migration: create trusted_users table if absent (additive, idempotent)
-	var err error
-	_, err = m.authDB.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS trusted_users (
-			username   VARCHAR PRIMARY KEY,
-			role_name  VARCHAR NOT NULL,
-			note       VARCHAR,
-			is_active  BOOLEAN DEFAULT true,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (role_name) REFERENCES roles(role_name)
+	// Soft migration: create trusted_users table if absent (additive, idempotent).
+	// Check first with a read-only query to avoid an unnecessary write transaction
+	// on deployments where auth.db is mounted as a single file (WAL directory
+	// may not be writable even when the file itself is).
+	var trustedUsersExists bool
+	err := m.authDB.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_name = 'trusted_users'
 		)
-	`)
+	`).Scan(&trustedUsersExists)
 	if err != nil {
-		return fmt.Errorf("failed to create trusted_users table: %w", err)
+		return fmt.Errorf("failed to check for trusted_users table: %w", err)
+	}
+
+	if !trustedUsersExists {
+		_, err = m.authDB.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS trusted_users (
+				username   VARCHAR PRIMARY KEY,
+				role_name  VARCHAR NOT NULL,
+				note       VARCHAR,
+				is_active  BOOLEAN DEFAULT true,
+				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (role_name) REFERENCES roles(role_name)
+			)
+		`)
+		if err != nil {
+			// Non-fatal: log a warning and continue. API key auth still works;
+			// trusted-user-header auth requires this table. Likely cause: auth.db
+			// is mounted as a single file and the container cannot create the WAL
+			// file alongside it. Fix: mount the auth.db parent directory instead
+			// of the file, or pre-create trusted_users via the auth-db CLI tool.
+			m.logger.Warn("Could not create trusted_users table; trusted-user-header auth unavailable",
+				zap.Error(err),
+				zap.String("hint", "mount the auth.db directory (not just the file) so the WAL can be written, or run: auth-db user init -d <path>"),
+			)
+		}
 	}
 
 	// Validate that at least one role exists
