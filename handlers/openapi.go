@@ -377,7 +377,6 @@ func (h *OpenAPIHandler) generateCreateOperation() map[string]interface{} {
 					"schema": map[string]interface{}{
 						"type": "object",
 						"additionalProperties": map[string]interface{}{
-							"nullable": true,
 							"oneOf": []map[string]interface{}{
 								{"type": "string"},
 								{"type": "number"},
@@ -1644,7 +1643,6 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"type":        "object",
 						"description": "Column-value pairs to update",
 						"additionalProperties": map[string]interface{}{
-							"nullable": true,
 							"oneOf": []map[string]interface{}{
 								{"type": "string"},
 								{"type": "number"},
@@ -1700,7 +1698,6 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"type":        "array",
 						"description": "Query parameters for parameterized queries",
 						"items": map[string]interface{}{
-							"nullable": true,
 							"oneOf": []map[string]interface{}{
 								{"type": "string"},
 								{"type": "number"},
@@ -1728,7 +1725,6 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"items": map[string]interface{}{
 							"type": "array",
 							"items": map[string]interface{}{
-								"nullable": true,
 								"oneOf": []map[string]interface{}{
 									{"type": "string"},
 									{"type": "number"},
@@ -1845,7 +1841,6 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 				"properties": map[string]interface{}{
 					"key": map[string]interface{}{
 						"description": "The unique value of the grouped column",
-						"nullable":    true,
 						"oneOf": []map[string]interface{}{
 							{"type": "string"},
 							{"type": "number"},
