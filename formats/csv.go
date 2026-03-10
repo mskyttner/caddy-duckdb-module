@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -12,6 +13,50 @@ const (
 	// and HTTP response for streaming. This enables true streaming for large datasets.
 	csvFlushInterval = 1000
 )
+
+// WriteCSVToWriter writes query results as CSV to any io.Writer.
+// Returns the number of rows written.
+func WriteCSVToWriter(w io.Writer, rows *sql.Rows) (int64, error) {
+	columns, err := rows.Columns()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get columns: %w", err)
+	}
+
+	csvWriter := csv.NewWriter(w)
+	if err := csvWriter.Write(columns); err != nil {
+		return 0, fmt.Errorf("failed to write CSV header: %w", err)
+	}
+
+	values := make([]interface{}, len(columns))
+	valuePtrs := make([]interface{}, len(columns))
+	for i := range columns {
+		valuePtrs[i] = &values[i]
+	}
+	record := make([]string, len(columns))
+
+	var rowCount int64
+	for rows.Next() {
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return rowCount, fmt.Errorf("failed to scan row: %w", err)
+		}
+		for i, val := range values {
+			record[i] = formatCSVValue(val)
+		}
+		if err := csvWriter.Write(record); err != nil {
+			return rowCount, fmt.Errorf("failed to write CSV row: %w", err)
+		}
+		rowCount++
+	}
+
+	csvWriter.Flush()
+	if err := csvWriter.Error(); err != nil {
+		return rowCount, fmt.Errorf("failed to flush CSV: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return rowCount, fmt.Errorf("error iterating rows: %w", err)
+	}
+	return rowCount, nil
+}
 
 // WriteCSV writes query results as CSV with streaming support.
 // It periodically flushes data to enable true HTTP streaming for large datasets,

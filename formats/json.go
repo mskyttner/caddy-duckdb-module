@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -44,6 +45,59 @@ type JSONWriteOptions struct {
 	Format        JSONFormat
 	ExecutionTime time.Duration
 	IncludeMeta   bool
+}
+
+// WriteJSONToWriter writes query results as a JSON array of objects to any io.Writer.
+// Returns the number of rows written.
+func WriteJSONToWriter(w io.Writer, rows *sql.Rows) (int64, error) {
+	columns, err := rows.Columns()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get columns: %w", err)
+	}
+
+	values := make([]interface{}, len(columns))
+	valuePtrs := make([]interface{}, len(columns))
+	for i := range columns {
+		valuePtrs[i] = &values[i]
+	}
+
+	enc := json.NewEncoder(w)
+	if _, err := fmt.Fprint(w, "["); err != nil {
+		return 0, err
+	}
+
+	var rowCount int64
+	for rows.Next() {
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return rowCount, fmt.Errorf("failed to scan row: %w", err)
+		}
+		rowMap := make(map[string]interface{}, len(columns))
+		for i, col := range columns {
+			switch v := values[i].(type) {
+			case nil:
+				rowMap[col] = nil
+			case []byte:
+				rowMap[col] = string(v)
+			default:
+				rowMap[col] = v
+			}
+		}
+		if rowCount > 0 {
+			fmt.Fprint(w, ",")
+		}
+		if err := enc.Encode(rowMap); err != nil {
+			return rowCount, fmt.Errorf("failed to encode row: %w", err)
+		}
+		rowCount++
+	}
+
+	if _, err := fmt.Fprint(w, "]"); err != nil {
+		return rowCount, err
+	}
+	if err := rows.Err(); err != nil {
+		return rowCount, fmt.Errorf("error iterating rows: %w", err)
+	}
+	return rowCount, nil
 }
 
 // WriteJSON writes query results as JSON with pagination.

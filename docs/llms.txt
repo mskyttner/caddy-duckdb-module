@@ -1,0 +1,227 @@
+# caddy-duckdb API Guide for LLMs
+
+> **Base URL:** `https://<host>/duckdb`  (configured by server operator)
+> **OpenAPI Spec:** `https://<host>/duckdb/openapi.json`
+> **Interactive Docs:** `https://<host>/duckdb/docs`
+> **MCP Endpoint:** `https://<host>/duckdb/mcp`
+
+A REST + MCP API providing SQL access to a DuckDB database. Designed for analysts, tools, and LLMs.
+
+---
+
+## Authentication
+
+Three equivalent methods — use any one:
+
+| Method | Example |
+|--------|---------|
+| **Header** (preferred) | `-H "X-API-Key: YOUR_KEY"` |
+| **Query param** | `?api_key=YOUR_KEY` |
+| **Basic auth** | `-u apikey:YOUR_KEY` |
+
+**Roles:** `reader` (read-only), `editor` (CRUD on tables), `admin` (+ raw SQL + execute + export)
+
+---
+
+## MCP Access (recommended for LLMs)
+
+The `/duckdb/mcp` endpoint implements the [Model Context Protocol](https://modelcontextprotocol.io) using the streamable-HTTP transport. It is the most ergonomic interface for LLMs: tools are self-describing and the export tool avoids flooding context windows with row data.
+
+### Connect
+
+```json
+POST /duckdb/mcp
+X-API-Key: YOUR_KEY
+Content-Type: application/json
+
+{"jsonrpc":"2.0","id":1,"method":"initialize",
+ "params":{"protocolVersion":"2024-11-05","capabilities":{},
+           "clientInfo":{"name":"my-agent","version":"0.1"}}}
+```
+
+### Available MCP Tools
+
+| Tool | Permission | Description |
+|------|-----------|-------------|
+| `database_info` | query | Tables, schemas, loaded extensions overview |
+| `list_tables` | query | Tables (and optionally views) with column counts |
+| `describe` | query | Column names and types for a table or view |
+| `query` | query | Read-only SQL — result capped at `max_rows` (default 200) |
+| `export` | query | Run SQL, write to file, return URL — **use for large result sets** |
+| `execute` | execute | Write SQL: INSERT, UPDATE, DELETE, CREATE TABLE AS SELECT, etc. |
+
+### Tool: `query`
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+  "name": "query",
+  "arguments": {
+    "sql": "SELECT year, COUNT(*) AS n FROM publications GROUP BY year ORDER BY year DESC LIMIT 10",
+    "max_rows": 50
+  }
+}}
+```
+
+Response: JSON object with `columns`, `rows`, `count`. If truncated, includes `truncated: true` and a note.
+
+### Tool: `export` — token-efficient bulk access
+
+Use `export` instead of `query` for any result set larger than a few hundred rows. Instead of returning row data (which consumes context), it writes the result to a server-side file and returns a lightweight metadata object:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+  "name": "export",
+  "arguments": {
+    "sql": "SELECT * FROM publications WHERE year >= '2020'",
+    "format": "parquet",
+    "ttl_minutes": 60
+  }
+}}
+```
+
+Response (~15 tokens of data):
+```json
+{
+  "url": "/duckdb/exports/8b217c8e-6997-4465-8127-0301f0ce6337.parquet",
+  "filename": "8b217c8e-...parquet",
+  "format": "parquet",
+  "rows": 47312,
+  "size_bytes": 2184320,
+  "expires_at": "2025-01-01T13:00:00Z"
+}
+```
+
+The file is then downloadable at the returned URL. Supported formats: `parquet` (default, smallest), `csv`, `json`.
+
+### Tool: `execute`
+
+Requires `execute` permission (admin role by default).
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+  "name": "execute",
+  "arguments": {
+    "sql": "INSERT INTO my_table VALUES (1, 'hello')"
+  }
+}}
+```
+
+Response: `"OK: 1 rows affected"`
+
+### Tool: `list_tables`
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{
+  "name": "list_tables",
+  "arguments": {"schema": "main", "include_views": "false"}
+}}
+```
+
+### Tool: `describe`
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{
+  "name": "describe",
+  "arguments": {"table": "publications"}
+}}
+```
+
+---
+
+## REST Access
+
+The REST API is available for direct HTTP clients.
+
+### Key Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/` | POST | key | DuckDB httpserver-compatible: raw SQL in body, JSONCompact response |
+| `/api` | GET | key | List accessible tables and views |
+| `/api/{table}` | GET | key | Query table with filters, sorting, pagination |
+| `/api/{table}` | POST/PUT/DELETE | editor+ | Insert / update / delete records |
+| `/api/{table}/columns` | GET | key | Table schema and optional statistics |
+| `/query` | POST | key | Raw SQL query (read-only) |
+| `/execute` | POST | execute | Write SQL (INSERT, UPDATE, DELETE, DDL) |
+| `/export` | POST | key | Run SQL, write result to file, return URL |
+| `/mcp` | POST | key | MCP streamable-HTTP endpoint |
+| `/openapi.json` | GET | — | OpenAPI 3.0.3 spec |
+| `/health` | GET | — | Health check |
+
+### REST Export
+
+```bash
+curl -X POST -H "X-API-Key: KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"sql":"SELECT * FROM publications WHERE year >= '\''2020'\''","format":"parquet"}' \
+  https://<host>/duckdb/export
+```
+
+### REST Raw SQL Query
+
+```bash
+curl -X POST -H "X-API-Key: KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"sql":"SELECT COUNT(*) FROM publications"}' \
+  https://<host>/duckdb/query
+```
+
+### httpserver-compatible endpoint
+
+```bash
+# Raw SQL in body, returns JSONCompact
+curl -X POST -H "X-API-Key: KEY" \
+  --data-binary "SELECT 42 AS answer" \
+  https://<host>/duckdb/
+```
+
+---
+
+## Token-Saving Strategy for LLMs
+
+| Situation | Recommended approach |
+|-----------|---------------------|
+| Exploring schema | `describe` or `list_tables` MCP tools — metadata only |
+| Counting / aggregating | `query` MCP tool with GROUP BY — result is small |
+| Fetching < 200 rows | `query` MCP tool |
+| Fetching > 200 rows | `export` MCP tool — returns URL, not data |
+| All rows from a table | `export` MCP tool with `SELECT *` |
+| Delivering data to user | `export` → share the URL |
+
+**Rule of thumb:** use `query` to explore and understand; use `export` to deliver.
+
+The `export` tool response is always ~15 tokens regardless of result size (1 row or 50 million rows). The returned URL can be passed directly to downstream tools, shared with the user, or used in further processing steps.
+
+---
+
+## Recommended Workflow for LLMs
+
+1. Call `database_info` — understand schemas and table count
+2. Call `list_tables` — enumerate tables in the target schema
+3. Call `describe` on relevant tables — understand columns and types
+4. Call `query` for small exploratory queries and aggregations
+5. Call `export` for any full-table or large-result retrieval
+
+---
+
+## Error Handling
+
+| Code | Meaning | Action |
+|------|---------|--------|
+| 400 | Bad request | Check SQL syntax or JSON body |
+| 401 | Unauthorized | Provide valid API key |
+| 403 | Forbidden | Insufficient role permissions |
+| 404 | Not found | Table or resource doesn't exist |
+| 500 | Server error | Check SQL; retry with backoff |
+| 503 | Service unavailable | Export directory not configured |
+
+MCP tool errors are returned as text content prefixed with `"Error: "` rather than HTTP error codes — always check the content string.
+
+---
+
+## Notes
+
+- Internal tables (`api_keys`, `roles`, `permissions`, `trusted_users`) are blocked from all query, export, and execute access.
+- Export files are temporary — the server deletes them after the configured TTL (default: 1 hour). Download promptly or pass the URL to the user.
+- DuckDB SQL dialect: use `DESCRIBE`, `SHOW TABLES`, `SUMMARIZE`, window functions, `READ_PARQUET()`, `READ_CSV()`, etc.
+- The `execute` permission is separate from `query`. Ask the server operator to grant it if write access is needed.

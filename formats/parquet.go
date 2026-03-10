@@ -3,6 +3,7 @@ package formats
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/apache/arrow/go/v18/arrow"
@@ -12,6 +13,80 @@ import (
 	"github.com/apache/arrow/go/v18/parquet/compress"
 	"github.com/apache/arrow/go/v18/parquet/pqarrow"
 )
+
+// WriteParquetToWriter writes query results as Parquet to any io.Writer.
+// Returns the number of rows written.
+func WriteParquetToWriter(w io.Writer, rows *sql.Rows) (int64, error) {
+	columnTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get column types: %w", err)
+	}
+	columnNames, err := rows.Columns()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get column names: %w", err)
+	}
+
+	fields := make([]arrow.Field, len(columnNames))
+	for i, colType := range columnTypes {
+		arrowType, nullable := sqlTypeToArrowType(colType)
+		fields[i] = arrow.Field{Name: columnNames[i], Type: arrowType, Nullable: nullable}
+	}
+	schema := arrow.NewSchema(fields, nil)
+	pool := memory.NewGoAllocator()
+
+	const batchSize = 10000
+	var recordBatches []arrow.Record
+	var totalRows int64
+
+	for {
+		record, hasMore, err := buildRecordBatch(rows, schema, pool, batchSize, columnTypes)
+		if err != nil {
+			for _, r := range recordBatches {
+				r.Release()
+			}
+			return 0, fmt.Errorf("failed to build record batch: %w", err)
+		}
+		if record == nil {
+			break
+		}
+		totalRows += record.NumRows()
+		recordBatches = append(recordBatches, record)
+		if !hasMore {
+			break
+		}
+	}
+
+	if len(recordBatches) == 0 {
+		emptyArrays := make([]arrow.Array, len(schema.Fields()))
+		for i, field := range schema.Fields() {
+			builder := array.NewBuilder(pool, field.Type)
+			emptyArrays[i] = builder.NewArray()
+			builder.Release()
+		}
+		emptyBatch := array.NewRecord(schema, emptyArrays, 0)
+		for _, arr := range emptyArrays {
+			arr.Release()
+		}
+		recordBatches = append(recordBatches, emptyBatch)
+	}
+
+	table := array.NewTableFromRecords(schema, recordBatches)
+	defer table.Release()
+	for _, record := range recordBatches {
+		record.Release()
+	}
+
+	writerProps := parquet.NewWriterProperties(
+		parquet.WithCompression(compress.Codecs.Snappy),
+		parquet.WithDictionaryDefault(true),
+	)
+	arrowWriterProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema())
+
+	if err := pqarrow.WriteTable(table, w, table.NumRows(), writerProps, arrowWriterProps); err != nil {
+		return 0, fmt.Errorf("failed to write parquet: %w", err)
+	}
+	return totalRows, nil
+}
 
 // WriteParquet writes query results as Parquet format.
 // This function converts SQL rows to Arrow Table and then writes to Parquet format.

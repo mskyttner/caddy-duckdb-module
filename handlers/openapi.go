@@ -162,6 +162,15 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 		"/view/{name}/columns": map[string]interface{}{
 			"get": h.generateViewColumnsOperation(),
 		},
+		"/execute": map[string]interface{}{
+			"post": h.generateExecuteOperation(),
+		},
+		"/export": map[string]interface{}{
+			"post": h.generateExportOperation(),
+		},
+		"/mcp": map[string]interface{}{
+			"post": h.generateMCPOperation(),
+		},
 	}
 }
 
@@ -1404,6 +1413,212 @@ func (h *OpenAPIHandler) generateHTTPServerHeadOperation() map[string]interface{
 			"401": map[string]interface{}{
 				"description": "Unauthorized",
 			},
+		},
+	}
+}
+
+// generateExecuteOperation generates the POST /execute operation spec.
+func (h *OpenAPIHandler) generateExecuteOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Execute"},
+		"summary":     "Execute a write SQL statement",
+		"description": "Executes a raw SQL write statement (INSERT, UPDATE, DELETE, CREATE TABLE AS SELECT, COPY, etc.). Requires the `execute` permission on the caller's role. Read-only queries (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN) are rejected — use POST / or GET /query instead. Access to internal auth tables is always blocked.",
+		"operationId": "executeStatement",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"requestBody": map[string]interface{}{
+			"required":    true,
+			"description": "Raw SQL write statement",
+			"content": map[string]interface{}{
+				"text/plain": map[string]interface{}{
+					"schema": map[string]interface{}{
+						"type":    "string",
+						"example": "INSERT INTO logs (ts, msg) VALUES (now(), 'hello')",
+					},
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Statement executed successfully",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"rows_affected": map[string]interface{}{
+									"type":        "integer",
+									"format":      "int64",
+									"description": "Number of rows affected by the statement",
+								},
+							},
+							"required": []string{"rows_affected"},
+						},
+					},
+				},
+			},
+			"400": map[string]interface{}{"description": "Bad request (read-only query or empty body)"},
+			"401": map[string]interface{}{"description": "Unauthorized"},
+			"403": map[string]interface{}{"description": "Forbidden (no execute permission or internal table access)"},
+			"500": map[string]interface{}{"description": "Execution error"},
+		},
+	}
+}
+
+// generateExportOperation generates the POST /export operation spec.
+func (h *OpenAPIHandler) generateExportOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Export"},
+		"summary":     "Export query results to a file",
+		"description": "Executes a read-only SQL query and writes the results to a file in the server's export directory. Returns a URL to download the file rather than the row data, which avoids large payloads in API responses and LLM context windows. Requires `query` permission. Supported formats: parquet (default), csv, json.",
+		"operationId": "exportQuery",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"requestBody": map[string]interface{}{
+			"required": true,
+			"content": map[string]interface{}{
+				"application/json": map[string]interface{}{
+					"schema": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"sql": map[string]interface{}{
+								"type":        "string",
+								"description": "SQL SELECT query to execute",
+								"example":     "SELECT * FROM publications WHERE year > 2020",
+							},
+							"format": map[string]interface{}{
+								"type":        "string",
+								"enum":        []string{"parquet", "csv", "json"},
+								"default":     "parquet",
+								"description": "Output file format",
+							},
+							"ttl_minutes": map[string]interface{}{
+								"type":        "integer",
+								"description": "How long to keep the exported file (minutes). 0 = server default.",
+								"default":     0,
+							},
+						},
+						"required": []string{"sql"},
+					},
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Export successful",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"url": map[string]interface{}{
+									"type":        "string",
+									"description": "URL to download the exported file",
+								},
+								"filename": map[string]interface{}{
+									"type":        "string",
+									"description": "Filename of the exported file",
+								},
+								"format": map[string]interface{}{
+									"type":        "string",
+									"description": "Format of the exported file",
+								},
+								"rows": map[string]interface{}{
+									"type":        "integer",
+									"format":      "int64",
+									"description": "Number of rows exported",
+								},
+								"size_bytes": map[string]interface{}{
+									"type":        "integer",
+									"format":      "int64",
+									"description": "Size of the exported file in bytes",
+								},
+								"expires_at": map[string]interface{}{
+									"type":        "string",
+									"format":      "date-time",
+									"description": "When the exported file will be deleted",
+								},
+							},
+							"required": []string{"url", "filename", "format", "rows", "size_bytes", "expires_at"},
+						},
+					},
+				},
+			},
+			"400": map[string]interface{}{"description": "Bad request (missing sql, unsupported format)"},
+			"401": map[string]interface{}{"description": "Unauthorized"},
+			"403": map[string]interface{}{"description": "Forbidden"},
+			"503": map[string]interface{}{"description": "Export directory not configured"},
+			"500": map[string]interface{}{"description": "Query or file write error"},
+		},
+	}
+}
+
+// generateMCPOperation generates the POST /mcp operation spec.
+func (h *OpenAPIHandler) generateMCPOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":    []string{"MCP"},
+		"summary": "MCP streamable-HTTP endpoint",
+		"description": "Model Context Protocol (MCP) endpoint using the streamable-HTTP transport. " +
+			"LLM clients send JSON-RPC 2.0 messages to interact with the following tools: " +
+			"`query` (read-only SQL), `execute` (write SQL, requires execute permission), " +
+			"`export` (write results to file, returns URL), `list_tables`, `describe`, `database_info`. " +
+			"Auth is identical to the REST API: pass X-API-Key (or use Basic auth / api_key query param). " +
+			"Compatible with any MCP client that supports the streamable-HTTP transport (e.g. Claude Desktop, mcp-go).",
+		"operationId": "mcpStreamableHTTP",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"requestBody": map[string]interface{}{
+			"required": true,
+			"content": map[string]interface{}{
+				"application/json": map[string]interface{}{
+					"schema": map[string]interface{}{
+						"type":        "object",
+						"description": "JSON-RPC 2.0 message (initialize, tools/list, tools/call, …)",
+						"properties": map[string]interface{}{
+							"jsonrpc": map[string]interface{}{
+								"type":    "string",
+								"example": "2.0",
+							},
+							"method": map[string]interface{}{
+								"type":    "string",
+								"example": "tools/call",
+							},
+							"id": map[string]interface{}{
+								"type":    "integer",
+								"example": 1,
+							},
+							"params": map[string]interface{}{
+								"type":        "object",
+								"description": "Method-specific parameters",
+							},
+						},
+					},
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "JSON-RPC 2.0 response or SSE stream (depending on Accept header)",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"type":        "object",
+							"description": "JSON-RPC 2.0 response envelope",
+						},
+					},
+					"text/event-stream": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"type":        "string",
+							"description": "Server-sent events stream for streaming responses",
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{"description": "Unauthorized"},
+			"403": map[string]interface{}{"description": "Forbidden"},
 		},
 	}
 }

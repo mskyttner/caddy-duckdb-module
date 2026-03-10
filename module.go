@@ -88,6 +88,26 @@ type DuckDB struct {
 	// Example: ["http://localhost:5522", "https://ui.example.com"]
 	CORSOrigins []string `json:"cors_origins,omitempty"`
 
+	// ExportsDir is the filesystem directory where POST /duckdb/export writes result files.
+	// If empty, the export endpoint returns 503. The directory is created if it does not exist.
+	// Example: "/data/exports"
+	ExportsDir string `json:"exports_dir,omitempty"`
+
+	// ExportsURL is the URL prefix under which exported files are served.
+	// Should match the file_server route in your Caddyfile.
+	// Default: "<route_prefix>/exports"
+	ExportsURL string `json:"exports_url,omitempty"`
+
+	// ExportTTLMinutes is the default lifetime of exported files in minutes.
+	// Files are removed by a background cleanup goroutine after this duration.
+	// Default: 60
+	ExportTTLMinutes int `json:"export_ttl_minutes,omitempty"`
+
+	// MaxMCPRows is the maximum number of rows returned by the MCP query tool.
+	// Larger result sets are truncated with a note directing the LLM to use the export tool.
+	// Default: 500
+	MaxMCPRows int `json:"max_mcp_rows,omitempty"`
+
 	logger            *zap.Logger
 	dbMgr             *database.Manager
 	authorizer        *auth.Authorizer
@@ -100,6 +120,9 @@ type DuckDB struct {
 	columnsHandler    *handlers.ColumnsHandler
 	ftsHandler        *handlers.FTSHandler
 	httpserverHandler *handlers.HTTPServerHandler
+	executeHandler    *handlers.ExecuteHandler
+	exportHandler     *handlers.ExportHandler
+	mcpHandler        *handlers.MCPHandler
 	routePrefix       string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
 }
 
@@ -201,6 +224,29 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	d.viewHandler = handlers.NewViewHandler(d.dbMgr, d.authorizer, d.MaxRowsPerPage, d.AbsoluteMaxRows, d.logger)
 	d.columnsHandler = handlers.NewColumnsHandler(d.dbMgr, d.authorizer, d.logger)
 	d.httpserverHandler = handlers.NewHTTPServerHandler(d.dbMgr, d.authorizer, d.logger)
+	d.executeHandler = handlers.NewExecuteHandler(d.dbMgr, d.authorizer, d.logger)
+
+	// Initialize export handler
+	exportsURL := d.ExportsURL
+	if exportsURL == "" {
+		exportsURL = d.routePrefix + "/exports"
+	}
+	exportTTL := time.Duration(d.ExportTTLMinutes) * time.Minute
+	if exportTTL == 0 {
+		exportTTL = time.Hour
+	}
+	d.exportHandler = handlers.NewExportHandler(d.dbMgr, d.authorizer, d.logger, d.ExportsDir, exportsURL, exportTTL)
+	if d.ExportsDir != "" {
+		d.exportHandler.StartCleanup(ctx, 10*time.Minute)
+		d.logger.Info("Export handler initialized",
+			zap.String("exports_dir", d.ExportsDir),
+			zap.String("exports_url", exportsURL),
+			zap.Duration("export_ttl", exportTTL),
+		)
+	}
+
+	// Initialize MCP handler
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, d.MaxMCPRows)
 
 	// Initialize FTS handler if service URL is configured
 	if d.FTSServiceURL == "" {
@@ -398,6 +444,18 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		// CRUD operations endpoint
 		d.crudHandler.ServeHTTP(w, r)
 		return nil
+	} else if r.URL.Path == d.routePrefix+"/execute" {
+		// Raw SQL write endpoint (requires execute permission)
+		d.executeHandler.ServeHTTP(w, r)
+		return nil
+	} else if r.URL.Path == d.routePrefix+"/export" {
+		// Export query results to file (returns URL, not row data)
+		d.exportHandler.ServeHTTP(w, r)
+		return nil
+	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/mcp") {
+		// MCP streamable-HTTP endpoint for LLM clients
+		d.mcpHandler.ServeHTTP(w, r)
+		return nil
 	}
 
 	// Unknown endpoint
@@ -504,6 +562,34 @@ func (d *DuckDB) UnmarshalCaddyfile(dispenser *caddyfile.Dispenser) error {
 				if len(d.CORSOrigins) == 0 {
 					return dispenser.ArgErr()
 				}
+			case "exports_dir":
+				if !dispenser.Args(&d.ExportsDir) {
+					return dispenser.ArgErr()
+				}
+			case "exports_url":
+				if !dispenser.Args(&d.ExportsURL) {
+					return dispenser.ArgErr()
+				}
+			case "export_ttl_minutes":
+				var ttlStr string
+				if !dispenser.Args(&ttlStr) {
+					return dispenser.ArgErr()
+				}
+				ttl, err := strconv.Atoi(ttlStr)
+				if err != nil {
+					return dispenser.Errf("invalid export_ttl_minutes: %v", err)
+				}
+				d.ExportTTLMinutes = ttl
+			case "max_mcp_rows":
+				var rowsStr string
+				if !dispenser.Args(&rowsStr) {
+					return dispenser.ArgErr()
+				}
+				rows, err := strconv.Atoi(rowsStr)
+				if err != nil {
+					return dispenser.Errf("invalid max_mcp_rows: %v", err)
+				}
+				d.MaxMCPRows = rows
 			default:
 				return dispenser.Errf("unknown subdirective: %s", dispenser.Val())
 			}

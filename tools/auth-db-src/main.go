@@ -40,6 +40,7 @@ The created database can be mounted into containers via volume mounts.`,
 
 	// Add subcommands
 	rootCmd.AddCommand(initCmd())
+	rootCmd.AddCommand(migrateCmd())
 	rootCmd.AddCommand(roleCmd())
 	rootCmd.AddCommand(keyCmd())
 	rootCmd.AddCommand(permissionCmd())
@@ -49,6 +50,46 @@ The created database can be mounted into containers via volume mounts.`,
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// migrateCmd creates the migrate subcommand
+func migrateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate",
+		Short: "Apply schema migrations to an existing auth database",
+		Long: `Apply incremental schema migrations to bring an existing auth database
+up to date with the current version of the Caddy DuckDB module.
+
+Safe to run multiple times (idempotent). Currently applies:
+  - Add can_execute column to permissions table (enables POST /duckdb/execute)`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMigrate()
+		},
+	}
+}
+
+func runMigrate() error {
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// Migration: add can_execute column to permissions (idempotent via IF NOT EXISTS)
+	_, err = db.Exec(`ALTER TABLE permissions ADD COLUMN IF NOT EXISTS can_execute BOOLEAN DEFAULT false`)
+	if err != nil {
+		return fmt.Errorf("failed to add can_execute column: %w", err)
+	}
+	fmt.Println("✓ permissions.can_execute column present")
+
+	// Grant can_execute to admin role on wildcard if not already set
+	_, err = db.Exec(`UPDATE permissions SET can_execute = true WHERE role_name = 'admin' AND table_name = '*'`)
+	if err != nil {
+		return fmt.Errorf("failed to update admin execute permission: %w", err)
+	}
+	fmt.Println("✓ admin role granted execute permission")
+	fmt.Println("\nMigration complete. Restart the Caddy server to apply changes.")
+	return nil
 }
 
 // initCmd creates the init subcommand
@@ -300,6 +341,7 @@ func runInit(withDefaults bool) error {
 			can_update BOOLEAN DEFAULT false,
 			can_delete BOOLEAN DEFAULT false,
 			can_query BOOLEAN DEFAULT false,
+			can_execute BOOLEAN DEFAULT false,
 			FOREIGN KEY (role_name) REFERENCES roles(role_name),
 			UNIQUE(role_name, table_name)
 		);
@@ -339,14 +381,14 @@ func runInit(withDefaults bool) error {
 			VALUES ('reader', 'Read-only access to all tables');
 
 			-- Default permissions
-			INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query)
-			VALUES (nextval('permissions_id_seq'), 'admin', '*', true, true, true, true, true);
+			INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute)
+			VALUES (nextval('permissions_id_seq'), 'admin', '*', true, true, true, true, true, true);
 
-			INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query)
-			VALUES (nextval('permissions_id_seq'), 'editor', '*', true, true, true, true, false);
+			INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute)
+			VALUES (nextval('permissions_id_seq'), 'editor', '*', true, true, true, true, false, false);
 
-			INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query)
-			VALUES (nextval('permissions_id_seq'), 'reader', '*', false, true, false, false, false);
+			INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute)
+			VALUES (nextval('permissions_id_seq'), 'reader', '*', false, true, false, false, false, false);
 		`
 
 		_, err = db.Exec(defaults)
@@ -625,14 +667,14 @@ func runKeyList(showKeys bool) error {
 }
 
 // parseOperations parses operation flags into boolean values
-func parseOperations(ops string) (canCreate, canRead, canUpdate, canDelete, canQuery bool, err error) {
+func parseOperations(ops string) (canCreate, canRead, canUpdate, canDelete, canQuery, canExecute bool, err error) {
 	ops = strings.ToLower(strings.TrimSpace(ops))
 
 	if ops == "all" {
-		return true, true, true, true, true, nil
+		return true, true, true, true, true, true, nil
 	}
 	if ops == "crud" {
-		return true, true, true, true, false, nil
+		return true, true, true, true, false, false, nil
 	}
 
 	parts := strings.Split(ops, ",")
@@ -649,12 +691,14 @@ func parseOperations(ops string) (canCreate, canRead, canUpdate, canDelete, canQ
 			canDelete = true
 		case "q", "query":
 			canQuery = true
+		case "e", "execute":
+			canExecute = true
 		default:
-			return false, false, false, false, false, fmt.Errorf("unknown operation: %s", p)
+			return false, false, false, false, false, false, fmt.Errorf("unknown operation: %s (valid: c/create, r/read, u/update, d/delete, q/query, e/execute, all, crud)", p)
 		}
 	}
 
-	return canCreate, canRead, canUpdate, canDelete, canQuery, nil
+	return canCreate, canRead, canUpdate, canDelete, canQuery, canExecute, nil
 }
 
 // runPermissionAdd adds a permission
@@ -672,28 +716,29 @@ func runPermissionAdd(role, table, ops string) error {
 		return fmt.Errorf("role '%s' does not exist", role)
 	}
 
-	canCreate, canRead, canUpdate, canDelete, canQuery, err := parseOperations(ops)
+	canCreate, canRead, canUpdate, canDelete, canQuery, canExecute, err := parseOperations(ops)
 	if err != nil {
 		return err
 	}
 
 	_, err = db.Exec(`
-		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query)
-		VALUES (nextval('permissions_id_seq'), ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute)
+		VALUES (nextval('permissions_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (role_name, table_name) DO UPDATE SET
 			can_create = EXCLUDED.can_create,
 			can_read = EXCLUDED.can_read,
 			can_update = EXCLUDED.can_update,
 			can_delete = EXCLUDED.can_delete,
-			can_query = EXCLUDED.can_query
-	`, role, table, canCreate, canRead, canUpdate, canDelete, canQuery)
+			can_query = EXCLUDED.can_query,
+			can_execute = EXCLUDED.can_execute
+	`, role, table, canCreate, canRead, canUpdate, canDelete, canQuery, canExecute)
 	if err != nil {
 		return fmt.Errorf("failed to create permission: %w", err)
 	}
 
 	fmt.Printf("✓ Permission set for role '%s' on table '%s'\n", role, table)
-	fmt.Printf("  Create: %v, Read: %v, Update: %v, Delete: %v, Query: %v\n",
-		canCreate, canRead, canUpdate, canDelete, canQuery)
+	fmt.Printf("  Create: %v, Read: %v, Update: %v, Delete: %v, Query: %v, Execute: %v\n",
+		canCreate, canRead, canUpdate, canDelete, canQuery, canExecute)
 
 	return nil
 }
@@ -728,7 +773,8 @@ func runPermissionList(role string) error {
 	}
 	defer db.Close()
 
-	query := "SELECT role_name, table_name, can_create, can_read, can_update, can_delete, can_query FROM permissions"
+	query := `SELECT role_name, table_name, can_create, can_read, can_update, can_delete, can_query,
+		COALESCE(can_execute, false) AS can_execute FROM permissions`
 	var args []interface{}
 	if role != "" {
 		query += " WHERE role_name = ?"
@@ -743,16 +789,16 @@ func runPermissionList(role string) error {
 	defer rows.Close()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ROLE\tTABLE\tCREATE\tREAD\tUPDATE\tDELETE\tQUERY")
-	fmt.Fprintln(w, "----\t-----\t------\t----\t------\t------\t-----")
+	fmt.Fprintln(w, "ROLE\tTABLE\tCREATE\tREAD\tUPDATE\tDELETE\tQUERY\tEXECUTE")
+	fmt.Fprintln(w, "----\t-----\t------\t----\t------\t------\t-----\t-------")
 
 	count := 0
 	for rows.Next() {
 		var roleName, tableName string
-		var canCreate, canRead, canUpdate, canDelete, canQuery bool
-		rows.Scan(&roleName, &tableName, &canCreate, &canRead, &canUpdate, &canDelete, &canQuery)
-		fmt.Fprintf(w, "%s\t%s\t%v\t%v\t%v\t%v\t%v\n",
-			roleName, tableName, canCreate, canRead, canUpdate, canDelete, canQuery)
+		var canCreate, canRead, canUpdate, canDelete, canQuery, canExecute bool
+		rows.Scan(&roleName, &tableName, &canCreate, &canRead, &canUpdate, &canDelete, &canQuery, &canExecute)
+		fmt.Fprintf(w, "%s\t%s\t%v\t%v\t%v\t%v\t%v\t%v\n",
+			roleName, tableName, canCreate, canRead, canUpdate, canDelete, canQuery, canExecute)
 		count++
 	}
 	w.Flush()

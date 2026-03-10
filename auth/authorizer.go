@@ -3,6 +3,7 @@ package auth
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
@@ -146,7 +147,45 @@ func (a *Authorizer) CheckPermission(roleName string, tableName string, operatio
 }
 
 // checkPermissionDB performs the actual database lookup for permissions.
+// It tries the current schema (with can_execute) first, and falls back to the
+// legacy schema (without can_execute) for databases that have not been migrated yet.
 func (a *Authorizer) checkPermissionDB(roleName string, tableName string, operation Operation) (bool, error) {
+	query := `
+		SELECT can_create, can_read, can_update, can_delete, can_query, can_execute
+		FROM permissions
+		WHERE role_name = $1 AND (table_name = $2 OR table_name = '*')
+		ORDER BY CASE WHEN table_name = $2 THEN 1 ELSE 2 END
+		LIMIT 1
+	`
+
+	var perm Permission
+	err := a.authDB.QueryRow(query, roleName, tableName).Scan(
+		&perm.CanCreate,
+		&perm.CanRead,
+		&perm.CanUpdate,
+		&perm.CanDelete,
+		&perm.CanQuery,
+		&perm.CanExecute,
+	)
+
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		// Fall back to legacy schema if can_execute column is absent.
+		// Run: auth-db migrate to add the column.
+		if strings.Contains(err.Error(), "can_execute") {
+			return a.checkPermissionDBLegacy(roleName, tableName, operation)
+		}
+		return false, fmt.Errorf("failed to query permissions: %w", err)
+	}
+
+	return permissionAllowed(perm, operation)
+}
+
+// checkPermissionDBLegacy queries the five-column schema for databases that
+// have not yet been migrated to include can_execute.
+func (a *Authorizer) checkPermissionDBLegacy(roleName string, tableName string, operation Operation) (bool, error) {
 	query := `
 		SELECT can_create, can_read, can_update, can_delete, can_query
 		FROM permissions
@@ -171,7 +210,12 @@ func (a *Authorizer) checkPermissionDB(roleName string, tableName string, operat
 		return false, fmt.Errorf("failed to query permissions: %w", err)
 	}
 
-	// Check the specific operation
+	// CanExecute is false for un-migrated databases — deny by default.
+	return permissionAllowed(perm, operation)
+}
+
+// permissionAllowed returns whether the given operation is allowed by the permission.
+func permissionAllowed(perm Permission, operation Operation) (bool, error) {
 	switch operation {
 	case OperationCreate:
 		return perm.CanCreate, nil
@@ -183,6 +227,8 @@ func (a *Authorizer) checkPermissionDB(roleName string, tableName string, operat
 		return perm.CanDelete, nil
 	case OperationQuery:
 		return perm.CanQuery, nil
+	case OperationExecute:
+		return perm.CanExecute, nil
 	default:
 		return false, fmt.Errorf("unknown operation: %s", operation)
 	}
@@ -306,8 +352,8 @@ func (a *Authorizer) CreateRole(roleName, description string) error {
 // CreatePermission creates a new permission and invalidates the cache.
 func (a *Authorizer) CreatePermission(perm Permission) error {
 	query := `
-		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query)
-		VALUES (nextval('permissions_id_seq'), $1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute)
+		VALUES (nextval('permissions_id_seq'), $1, $2, $3, $4, $5, $6, $7, $8)
 	`
 
 	_, err := a.authDB.Exec(query,
@@ -318,6 +364,7 @@ func (a *Authorizer) CreatePermission(perm Permission) error {
 		perm.CanUpdate,
 		perm.CanDelete,
 		perm.CanQuery,
+		perm.CanExecute,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create permission: %w", err)
@@ -333,8 +380,8 @@ func (a *Authorizer) CreatePermission(perm Permission) error {
 func (a *Authorizer) UpdatePermission(perm Permission) error {
 	query := `
 		UPDATE permissions
-		SET can_create = $1, can_read = $2, can_update = $3, can_delete = $4, can_query = $5
-		WHERE role_name = $6 AND table_name = $7
+		SET can_create = $1, can_read = $2, can_update = $3, can_delete = $4, can_query = $5, can_execute = $6
+		WHERE role_name = $7 AND table_name = $8
 	`
 
 	result, err := a.authDB.Exec(query,
@@ -343,6 +390,7 @@ func (a *Authorizer) UpdatePermission(perm Permission) error {
 		perm.CanUpdate,
 		perm.CanDelete,
 		perm.CanQuery,
+		perm.CanExecute,
 		perm.RoleName,
 		perm.TableName,
 	)
@@ -421,13 +469,40 @@ func (a *Authorizer) DeleteRole(roleName string) error {
 
 // GetPermissions returns all permissions for a role.
 func (a *Authorizer) GetPermissions(roleName string) ([]Permission, error) {
-	query := `
-		SELECT id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query
-		FROM permissions
-		WHERE role_name = $1
-	`
+	rows, err := a.authDB.Query(`
+		SELECT id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute
+		FROM permissions WHERE role_name = $1
+	`, roleName)
+	if err != nil {
+		if strings.Contains(err.Error(), "can_execute") {
+			// Legacy schema: fall back to five-column query.
+			return a.getPermissionsLegacy(roleName)
+		}
+		return nil, fmt.Errorf("failed to query permissions: %w", err)
+	}
+	defer rows.Close()
 
-	rows, err := a.authDB.Query(query, roleName)
+	var permissions []Permission
+	for rows.Next() {
+		var perm Permission
+		if err := rows.Scan(
+			&perm.ID, &perm.RoleName, &perm.TableName,
+			&perm.CanCreate, &perm.CanRead, &perm.CanUpdate, &perm.CanDelete,
+			&perm.CanQuery, &perm.CanExecute,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan permission: %w", err)
+		}
+		permissions = append(permissions, perm)
+	}
+	return permissions, nil
+}
+
+// getPermissionsLegacy queries the five-column schema for un-migrated databases.
+func (a *Authorizer) getPermissionsLegacy(roleName string) ([]Permission, error) {
+	rows, err := a.authDB.Query(`
+		SELECT id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query
+		FROM permissions WHERE role_name = $1
+	`, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query permissions: %w", err)
 	}
@@ -436,21 +511,14 @@ func (a *Authorizer) GetPermissions(roleName string) ([]Permission, error) {
 	var permissions []Permission
 	for rows.Next() {
 		var perm Permission
-		err := rows.Scan(
-			&perm.ID,
-			&perm.RoleName,
-			&perm.TableName,
-			&perm.CanCreate,
-			&perm.CanRead,
-			&perm.CanUpdate,
-			&perm.CanDelete,
+		if err := rows.Scan(
+			&perm.ID, &perm.RoleName, &perm.TableName,
+			&perm.CanCreate, &perm.CanRead, &perm.CanUpdate, &perm.CanDelete,
 			&perm.CanQuery,
-		)
-		if err != nil {
+		); err != nil {
 			return nil, fmt.Errorf("failed to scan permission: %w", err)
 		}
 		permissions = append(permissions, perm)
 	}
-
 	return permissions, nil
 }
