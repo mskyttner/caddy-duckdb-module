@@ -50,7 +50,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed setup instructions.
 
 ```bash
 # Quick setup
-git clone https://github.com/tobilg/caddy-duckdb-module.git
+git clone https://github.com/mskyttner/caddy-duckdb-module.git
 cd caddy-duckdb-module
 make setup
 ```

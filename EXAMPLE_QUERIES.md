@@ -7,6 +7,7 @@ This document provides end-to-end curl examples for all API endpoints. Each sect
 ## Table of Contents
 
 - [Setup: Create a Table](#setup-create-a-table)
+- [Authentication](#authentication)
 - [CRUD API Examples](#crud-api-examples)
   - [Create Records (POST)](#create-records-post)
   - [Read Records (GET)](#read-records-get)
@@ -16,6 +17,15 @@ This document provides end-to-end curl examples for all API endpoints. Each sect
   - [POST Query Endpoint](#post-query-endpoint)
   - [GET Query Endpoint](#get-query-endpoint)
 - [Response Formats](#response-formats)
+- [Advanced Query Features](#advanced-query-features)
+  - [Sparse Fieldsets (select)](#sparse-fieldsets-select)
+  - [Group By Aggregation](#group-by-aggregation)
+  - [Cursor Pagination](#cursor-pagination)
+  - [Column Schema (columns endpoint)](#column-schema-columns-endpoint)
+- [Execute Endpoint (Write SQL)](#execute-endpoint-write-sql)
+- [Export Endpoint (Token-efficient bulk access)](#export-endpoint-token-efficient-bulk-access)
+- [httpserver-Compatible Endpoint](#httpserver-compatible-endpoint)
+- [MCP Endpoint](#mcp-endpoint)
 - [Advanced Examples](#advanced-examples)
 
 ---
@@ -785,6 +795,320 @@ curl http://localhost:8080/duckdb/api/users \
   -H "Accept: application/vnd.apache.arrow.stream" \
   -o users.arrow
 ```
+
+---
+
+## Authentication
+
+Three equivalent methods — use any one:
+
+```bash
+# 1. Header (preferred)
+curl -H "X-API-Key: YOUR_API_KEY" http://localhost:8080/duckdb/api/users
+
+# 2. Query parameter
+curl "http://localhost:8080/duckdb/api/users?api_key=YOUR_API_KEY"
+
+# 3. HTTP Basic auth (username must be "apikey")
+curl -u "apikey:YOUR_API_KEY" http://localhost:8080/duckdb/api/users
+```
+
+---
+
+## Advanced Query Features
+
+### Sparse Fieldsets (select)
+
+Return only the columns you need to reduce response size:
+
+```bash
+curl "http://localhost:8080/duckdb/api/users?select=id,name,age&limit=5" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+**Response:**
+```json
+{
+  "data": [
+    {"id": 1, "name": "Alice Johnson", "age": 28},
+    {"id": 2, "name": "Bob Smith", "age": 35}
+  ]
+}
+```
+
+### Group By Aggregation
+
+Count records by a column without fetching individual rows:
+
+```bash
+curl "http://localhost:8080/duckdb/api/users?group_by=status" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+**Response:**
+```json
+{
+  "group_by": [
+    {"key": "active",   "key_display_name": "active",   "count": 3},
+    {"key": "inactive", "key_display_name": "inactive",  "count": 1},
+    {"key": "pending",  "key_display_name": "pending",   "count": 1}
+  ]
+}
+```
+
+### Cursor Pagination
+
+More efficient than offset pagination for large tables. Use `cursor=*` for the first page, then pass `next_cursor` from the response:
+
+```bash
+# First page
+curl "http://localhost:8080/duckdb/api/users?cursor=*&limit=2&sort=id:asc" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+**Response:**
+```json
+{
+  "data": [
+    {"id": 1, "name": "Alice Johnson", "age": 28, "status": "active"},
+    {"id": 2, "name": "Bob Smith",     "age": 35, "status": "active"}
+  ],
+  "meta": {
+    "count": 2,
+    "per_page": 2,
+    "next_cursor": "eyJzIjpbImlkIl0sInYiOlsyXSwiZCI6WyJhc2MiXX0="
+  }
+}
+```
+
+```bash
+# Next page (use next_cursor from previous response)
+curl "http://localhost:8080/duckdb/api/users?cursor=eyJzIjpbImlkIl0sInYiOlsyXSwiZCI6WyJhc2MiXX0=&limit=2&sort=id:asc" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+### Column Schema (columns endpoint)
+
+Discover table structure before querying:
+
+```bash
+# Standard format (names and types)
+curl http://localhost:8080/duckdb/api/users/columns \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+**Response:**
+```json
+{
+  "table": "users",
+  "columns": [
+    {"name": "id",         "type": "INTEGER",   "nullable": true},
+    {"name": "name",       "type": "VARCHAR",   "nullable": true},
+    {"name": "email",      "type": "VARCHAR",   "nullable": true},
+    {"name": "age",        "type": "INTEGER",   "nullable": true},
+    {"name": "status",     "type": "VARCHAR",   "nullable": true},
+    {"name": "created_at", "type": "TIMESTAMP", "nullable": true}
+  ]
+}
+```
+
+```bash
+# transform format — column→type map for use with DuckDB's json_transform()
+curl "http://localhost:8080/duckdb/api/users/columns?format=transform" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+```bash
+# summarize format — includes min/max/approx_unique/null_percentage statistics
+curl "http://localhost:8080/duckdb/api/users/columns?format=summarize" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+---
+
+## Execute Endpoint (Write SQL)
+
+`POST /duckdb/execute` runs write SQL (INSERT, UPDATE, DELETE, CREATE TABLE, COPY, etc.).
+Requires the `execute` permission on the caller's role (run `auth-db migrate` then `auth-db permission add -r admin -t '*' -o e`).
+Read-only statements (SELECT, SHOW, DESCRIBE) are rejected — use `/query` instead.
+
+```bash
+# INSERT
+curl -X POST http://localhost:8080/duckdb/execute \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: text/plain" \
+  --data-binary "INSERT INTO users (id, name, email, age, status) VALUES (6, 'Frank Miller', 'frank@example.com', 42, 'active')"
+```
+
+**Response:**
+```json
+{"rows_affected": 1}
+```
+
+```bash
+# UPDATE
+curl -X POST http://localhost:8080/duckdb/execute \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: text/plain" \
+  --data-binary "UPDATE users SET status = 'premium' WHERE age > 40"
+```
+
+```bash
+# CREATE TABLE
+curl -X POST http://localhost:8080/duckdb/execute \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: text/plain" \
+  --data-binary "CREATE TABLE IF NOT EXISTS events (id INTEGER, name VARCHAR, ts TIMESTAMP)"
+```
+
+```bash
+# Rejected: read-only query on execute endpoint returns 400
+curl -X POST http://localhost:8080/duckdb/execute \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: text/plain" \
+  --data-binary "SELECT * FROM users"
+```
+
+**Response (400):**
+```json
+{"error": "Bad Request", "message": "execute endpoint only accepts write SQL statements", "code": 400}
+```
+
+---
+
+## Export Endpoint (Token-efficient bulk access)
+
+`POST /duckdb/export` runs a SQL query, writes results to a server-side file, and returns a URL with metadata — not the row data. This is ideal for LLM clients where returning thousands of rows would consume context window tokens.
+
+Supported formats: `parquet` (default, smallest), `csv`, `json`.
+
+```bash
+curl -X POST http://localhost:8080/duckdb/export \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM users WHERE status = '\''active'\''", "format": "parquet"}'
+```
+
+**Response (~15 tokens regardless of result size):**
+```json
+{
+  "url":        "/duckdb/exports/8b217c8e-6997-4465-8127-0301f0ce6337.parquet",
+  "filename":   "8b217c8e-6997-4465-8127-0301f0ce6337.parquet",
+  "format":     "parquet",
+  "rows":       3,
+  "size_bytes": 4096,
+  "expires_at": "2025-01-15T11:00:00Z"
+}
+```
+
+Download the file at the returned URL:
+
+```bash
+curl -O http://localhost:8080/duckdb/exports/8b217c8e-6997-4465-8127-0301f0ce6337.parquet
+```
+
+```bash
+# CSV export with custom TTL
+curl -X POST http://localhost:8080/duckdb/export \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT id, name, email FROM users ORDER BY name", "format": "csv", "ttl_minutes": 30}'
+```
+
+Export requires `exports_dir` to be configured in the Caddyfile or via `DUCKDB_EXPORTS_DIR`.
+
+---
+
+## httpserver-Compatible Endpoint
+
+`POST /duckdb/` (trailing slash) accepts a raw SQL string in the body and returns results in DuckDB httpserver JSONCompact format. Compatible with tools like [duck-ui](https://github.com/caioricciuti/duck-ui).
+
+Only read-only queries are accepted (SELECT, WITH, FROM, SHOW, DESCRIBE, EXPLAIN).
+
+```bash
+# Raw SQL in body — returns JSONCompact by default
+curl -X POST http://localhost:8080/duckdb/ \
+  -H "X-API-Key: YOUR_API_KEY" \
+  --data-binary "SELECT status, COUNT(*) AS n FROM users GROUP BY status"
+```
+
+**Response (JSONCompact):**
+```json
+{
+  "meta": [{"name": "status", "type": "VARCHAR"}, {"name": "n", "type": "BIGINT"}],
+  "data": [["active", 3], ["inactive", 1], ["pending", 1]],
+  "rows": 3,
+  "statistics": {"elapsed": 0.001, "rows_read": 5, "bytes_read": 0}
+}
+```
+
+```bash
+# Request JSONEachRow format
+curl -X POST "http://localhost:8080/duckdb/?default_format=JSONEachRow" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  --data-binary "SELECT name, age FROM users LIMIT 2"
+
+# HEAD probe (returns 200 with no body — used by duck-ui to detect the endpoint)
+curl -I http://localhost:8080/duckdb/ \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
+---
+
+## MCP Endpoint
+
+`POST /duckdb/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) endpoint using the streamable-HTTP transport. LLM clients (Claude Desktop, custom agents) can connect to it for structured database access.
+
+Available tools: `query`, `execute`, `export`, `list_tables`, `describe`, `database_info`.
+
+Auth is identical to the REST API — pass `X-API-Key`.
+
+```bash
+# Initialize MCP session
+curl -X POST http://localhost:8080/duckdb/mcp \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"my-agent","version":"0.1"}}}'
+```
+
+```bash
+# List available tools
+curl -X POST http://localhost:8080/duckdb/mcp \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+```
+
+```bash
+# Call the query tool
+curl -X POST http://localhost:8080/duckdb/mcp \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT status, COUNT(*) AS n FROM users GROUP BY status"}}}'
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0", "id": 3,
+  "result": {
+    "content": [{"type": "text", "text": "{\"columns\":[\"status\",\"n\"],\"rows\":[{\"status\":\"active\",\"n\":3},...],\"count\":3}"}]
+  }
+}
+```
+
+```bash
+# Export to file via MCP (token-efficient — returns URL, not row data)
+curl -X POST http://localhost:8080/duckdb/mcp \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"export","arguments":{"sql":"SELECT * FROM users","format":"parquet"}}}'
+```
+
+To configure an MCP client, use:
+- **Transport**: streamable-HTTP
+- **URL**: `http://<host>/duckdb/mcp`
+- **Auth header**: `X-API-Key: YOUR_KEY`
 
 ---
 
