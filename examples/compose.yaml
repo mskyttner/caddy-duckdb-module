@@ -1,0 +1,54 @@
+# examples/compose.yaml — DiVA OAI MCP server
+#
+# Exposes the DiVA OAI normalized database as an MCP server using an
+# in-memory DuckDB that attaches the file in read-only mode via init.sql.
+#
+# One-time setup (run from the repo root):
+#   mkdir -p examples/diva-data
+#   ./tools/auth-db init -d examples/diva-data/auth.db
+#   ./tools/auth-db key add -d examples/diva-data/auth.db -r admin
+#   # Save the displayed API key!
+#
+# Start / stop:
+#   podman-compose -f examples/compose.yaml up -d
+#   podman-compose -f examples/compose.yaml down
+#
+# MCP endpoint: http://localhost:8099/duckdb/mcp
+#   Use X-API-Key: <your-key> header for authentication.
+
+services:
+  diva-mcp:
+    image: caddy-duckdb-diva
+    container_name: diva-mcp
+    ports:
+      - "8099:8080"
+    volumes:
+      # Caddyfile — use the reference docker Caddyfile
+      - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      # init.sql — attach + USE the diva database
+      - ./init.sql:/data/init.sql:ro
+      # DiVA database — read-only bind mount
+      - ../../harvest-tools/diva/diva_oai_normalized.db:/data/diva/diva_oai_normalized.db:ro
+      # auth.db directory (must be pre-initialized; see setup above)
+      - ./diva-data:/data/auth
+    environment:
+      - TZ=UTC
+      # Use an in-memory main DB; all data comes from the attached diva DB
+      - "DUCKDB_DATABASE_PATH=:memory:"
+      - DUCKDB_AUTH_DATABASE_PATH=/data/auth/auth.db
+      # Run init.sql on startup to ATTACH + USE diva
+      - DUCKDB_INIT_FILE=/data/init.sql
+      - DUCKDB_ACCESS_MODE=read_write
+      - DUCKDB_QUERY_TIMEOUT=60s
+      - DUCKDB_THREADS=4
+      - DUCKDB_MAX_ROWS_PER_PAGE=100
+      - DUCKDB_ABSOLUTE_MAX_ROWS=5000
+      - DUCKDB_MAX_MCP_ROWS=200
+      - DUCKDB_CORS_ORIGINS=*
+    restart: unless-stopped
+    healthcheck:
+      test: "curl -fsS http://localhost:8080/duckdb/health"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

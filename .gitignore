@@ -59,9 +59,10 @@ tools/auth-db
 .claude/
 CLAUDE.md
 
-# Ignore docs/ except markdown files
+# Ignore docs/ except markdown and text files
 docs/
 !docs/*.md
+!docs/*.txt
 
 # Local configuration files
 Caddyfile.local
