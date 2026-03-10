@@ -218,6 +218,23 @@ func (m *Manager) initAuthSchema() error {
 			"Please add at least one role using: auth-db role add -d <path> -n <role_name>")
 	}
 
+	// Warn if the can_execute column is absent (database predates the execute feature).
+	// This is a read-only check — run `auth-db migrate` to add the column.
+	var executeColExists bool
+	err = m.authDB.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'permissions' AND column_name = 'can_execute'
+		)
+	`).Scan(&executeColExists)
+	if err != nil {
+		m.logger.Warn("Could not check for can_execute column in permissions", zap.Error(err))
+	} else if !executeColExists {
+		m.logger.Warn("permissions table is missing can_execute column; POST /duckdb/execute will be unavailable",
+			zap.String("hint", "run: auth-db migrate -d "+m.authDBPath),
+		)
+	}
+
 	m.logger.Info("Auth database schema validated",
 		zap.Int("roles", roleCount),
 	)

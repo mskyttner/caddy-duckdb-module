@@ -1,7 +1,12 @@
 {
   "mcpServers": {
     "duckdb-go": {
+      "type": "sse",
       "url": "https://gitmcp.io/duckdb/duckdb-go"
+    },
+    "local": {
+      "type": "http",
+      "url": "http://localhost:5001/mcp"
     },
     "playwright": {
       "command": "npx",

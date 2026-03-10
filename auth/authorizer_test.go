@@ -40,6 +40,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 			can_update BOOLEAN DEFAULT false,
 			can_delete BOOLEAN DEFAULT false,
 			can_query BOOLEAN DEFAULT false,
+			can_execute BOOLEAN DEFAULT false,
 			FOREIGN KEY (role_name) REFERENCES roles(role_name),
 			UNIQUE(role_name, table_name)
 		);
@@ -220,8 +221,8 @@ func TestCheckPermission_Admin(t *testing.T) {
 
 	// Add admin permission
 	_, err := db.Exec(`
-		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query)
-		VALUES (nextval('permissions_id_seq'), 'admin', '*', true, true, true, true, true)
+		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute)
+		VALUES (nextval('permissions_id_seq'), 'admin', '*', true, true, true, true, true, true)
 	`)
 	if err != nil {
 		t.Fatalf("Failed to insert permission: %v", err)
@@ -248,8 +249,8 @@ func TestCheckPermission_Reader(t *testing.T) {
 
 	// Add reader permission (read-only)
 	_, err := db.Exec(`
-		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query)
-		VALUES (nextval('permissions_id_seq'), 'reader', '*', false, true, false, false, false)
+		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute)
+		VALUES (nextval('permissions_id_seq'), 'reader', '*', false, true, false, false, false, false)
 	`)
 	if err != nil {
 		t.Fatalf("Failed to insert permission: %v", err)
@@ -339,10 +340,10 @@ func TestGetPermissions(t *testing.T) {
 
 	// Add some permissions
 	_, err := db.Exec(`
-		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query)
+		INSERT INTO permissions (id, role_name, table_name, can_create, can_read, can_update, can_delete, can_query, can_execute)
 		VALUES
-			(nextval('permissions_id_seq'), 'admin', 'users', true, true, true, true, true),
-			(nextval('permissions_id_seq'), 'admin', 'posts', true, true, true, true, true)
+			(nextval('permissions_id_seq'), 'admin', 'users', true, true, true, true, true, true),
+			(nextval('permissions_id_seq'), 'admin', 'posts', true, true, true, true, true, true)
 	`)
 	if err != nil {
 		t.Fatalf("Failed to insert permissions: %v", err)

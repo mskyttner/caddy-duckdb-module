@@ -20,14 +20,15 @@ type Role struct {
 
 // Permission represents a permission for a role on a table.
 type Permission struct {
-	ID        int
-	RoleName  string
-	TableName string
-	CanCreate bool
-	CanRead   bool
-	CanUpdate bool
-	CanDelete bool
-	CanQuery  bool
+	ID         int
+	RoleName   string
+	TableName  string
+	CanCreate  bool
+	CanRead    bool
+	CanUpdate  bool
+	CanDelete  bool
+	CanQuery   bool
+	CanExecute bool
 }
 
 // TrustedUser maps an upstream identity (e.g. email from X-Vouch-User) to a role.
@@ -43,9 +44,10 @@ type TrustedUser struct {
 type Operation string
 
 const (
-	OperationCreate Operation = "create"
-	OperationRead   Operation = "read"
-	OperationUpdate Operation = "update"
-	OperationDelete Operation = "delete"
-	OperationQuery  Operation = "query"
+	OperationCreate  Operation = "create"
+	OperationRead    Operation = "read"
+	OperationUpdate  Operation = "update"
+	OperationDelete  Operation = "delete"
+	OperationQuery   Operation = "query"
+	OperationExecute Operation = "execute"
 )
