@@ -226,14 +226,37 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	d.httpserverHandler = handlers.NewHTTPServerHandler(d.dbMgr, d.authorizer, d.logger)
 	d.executeHandler = handlers.NewExecuteHandler(d.dbMgr, d.authorizer, d.logger)
 
-	// Initialize export handler
+	// Initialize export handler (env var fallbacks for optional settings)
+	if d.ExportsDir == "" {
+		if envExportsDir := os.Getenv("DUCKDB_EXPORTS_DIR"); envExportsDir != "" {
+			d.ExportsDir = envExportsDir
+		}
+	}
 	exportsURL := d.ExportsURL
 	if exportsURL == "" {
-		exportsURL = d.routePrefix + "/exports"
+		if envExportsURL := os.Getenv("DUCKDB_EXPORTS_URL"); envExportsURL != "" {
+			exportsURL = envExportsURL
+		} else {
+			exportsURL = d.routePrefix + "/exports"
+		}
+	}
+	if d.ExportTTLMinutes == 0 {
+		if envTTL := os.Getenv("DUCKDB_EXPORT_TTL_MINUTES"); envTTL != "" {
+			if ttl, err := strconv.Atoi(envTTL); err == nil {
+				d.ExportTTLMinutes = ttl
+			}
+		}
 	}
 	exportTTL := time.Duration(d.ExportTTLMinutes) * time.Minute
 	if exportTTL == 0 {
 		exportTTL = time.Hour
+	}
+	if d.MaxMCPRows == 0 {
+		if envMaxRows := os.Getenv("DUCKDB_MAX_MCP_ROWS"); envMaxRows != "" {
+			if rows, err := strconv.Atoi(envMaxRows); err == nil {
+				d.MaxMCPRows = rows
+			}
+		}
 	}
 	d.exportHandler = handlers.NewExportHandler(d.dbMgr, d.authorizer, d.logger, d.ExportsDir, exportsURL, exportTTL)
 	if d.ExportsDir != "" {

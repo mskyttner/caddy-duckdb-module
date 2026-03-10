@@ -32,7 +32,7 @@ gcc --version  # or clang --version on macOS
 
 ```bash
 # Clone the repository
-git clone https://github.com/tobilg/caddy-duckdb-module.git
+git clone https://github.com/mskyttner/caddy-duckdb-module.git
 cd caddy-duckdb-module
 
 # Run setup (checks prerequisites, builds, generates API key)
@@ -79,43 +79,53 @@ Run `make help` to see all available commands:
 caddy-duckdb-module/
 ├── cmd/
 │   └── caddy/
-│       └── main.go          # Caddy entry point
-├── module.go                 # Caddy module registration & ServeHTTP
-├── config.go                 # Configuration structs & response types
+│       └── main.go              # Caddy entry point
+├── module.go                     # Caddy module registration, ServeHTTP, config
+├── config.go                     # Configuration structs & response types
 ├── database/
-│   ├── manager.go           # Connection pooling & query execution
-│   ├── operations.go        # CRUD database operations
-│   ├── operations_test.go   # Operations tests
+│   ├── manager.go               # Connection pooling, auth schema init
+│   ├── operations.go            # CRUD database operations
+│   ├── operations_test.go       # Operations tests
 │   └── prepared_statements_test.go
 ├── auth/
-│   ├── models.go            # Auth data structures (APIKey, Role, Permission)
-│   ├── authorizer.go        # Permission checking logic
-│   ├── authorizer_test.go   # Authorizer tests
-│   └── middleware.go        # HTTP authentication middleware
+│   ├── models.go                # Auth data structures (APIKey, Role, Permission, TrustedUser)
+│   ├── authorizer.go            # Permission checking, trusted user lookup
+│   ├── authorizer_test.go       # Authorizer tests
+│   └── middleware.go            # HTTP authentication middleware
 ├── handlers/
-│   ├── crud.go              # CRUD endpoint handler (/duckdb/api/{table})
-│   ├── query.go             # SQL query handler (/duckdb/query)
-│   ├── query_test.go        # Query handler tests
-│   ├── params.go            # Request parameter parsing
-│   └── openapi.go           # OpenAPI 3.0 specification
+│   ├── crud.go                  # CRUD endpoint handler (/duckdb/api/{table})
+│   ├── query.go                 # SQL query handler (/duckdb/query)
+│   ├── execute.go               # Write SQL handler (/duckdb/execute)
+│   ├── export.go                # Export handler (/duckdb/export)
+│   ├── mcp.go                   # MCP streamable-HTTP endpoint (/duckdb/mcp)
+│   ├── httpserver.go            # httpserver-compatible handler (POST /duckdb/)
+│   ├── columns.go               # Column schema endpoint (/duckdb/api/{table}/columns)
+│   ├── internal_tables.go       # Shared: containsInternalTables, stripSQLComments
+│   ├── query_test.go            # Query handler tests
+│   ├── params.go                # Request parameter parsing
+│   └── openapi.go               # OpenAPI 3.0 specification handler
 ├── formats/
-│   ├── json.go              # JSON response formatter
-│   ├── csv.go               # CSV response formatter
-│   ├── parquet.go           # Apache Parquet formatter
-│   └── arrow.go             # Apache Arrow IPC formatter
+│   ├── json.go                  # JSON response formatter
+│   ├── csv.go                   # CSV response formatter
+│   ├── parquet.go               # Apache Parquet formatter
+│   └── arrow.go                 # Apache Arrow IPC formatter
 ├── tools/
-├── auth-db-src/            # Auth database CLI tool source
-│   └── main.go              # CLI for managing auth database
+│   └── auth-db-src/             # Auth database CLI tool source
+│       └── main.go              # CLI: init, key, role, permission, user, migrate, info
+├── docs/
+│   ├── llms.txt                 # LLM integration guide (MCP + token-saving)
+│   ├── fts-duckdb-native.md     # FTS with DuckDB native search
+│   └── fts-sidecar-setup.md    # FTS sidecar setup guide
 ├── examples/
-│   └── Caddyfile            # Example Caddyfile configuration
+│   └── Caddyfile.docker         # Reference Caddyfile with all env vars documented
 ├── scripts/
-│   ├── setup.sh             # Development setup script
-│   └── pre-commit           # Pre-commit hook script
-├── Makefile                  # Build and development commands
-├── Dockerfile               # Multi-stage Docker build
-├── docker-compose.yml       # Docker Compose configuration
-├── go.mod                   # Go module definition
-└── go.sum                   # Go module checksums
+│   ├── setup.sh                 # Development setup script
+│   └── pre-commit               # Pre-commit hook script
+├── Makefile                      # Build and development commands
+├── Dockerfile                    # Multi-stage Docker build
+├── docker-compose.yml            # Docker Compose configuration
+├── go.mod                        # Go module definition
+└── go.sum                        # Go module checksums
 ```
 
 ## Development Workflow
@@ -222,29 +232,40 @@ Caddy uses structured logging. To see more verbose output, you can modify the Ca
 }
 ```
 
-### Inspect the Database
+### Inspect the Auth Database
 
-Connect directly to the DuckDB database files:
+Use the `auth-db` CLI tool (do not use the DuckDB CLI directly on auth.db while the server is running):
+
+```bash
+# List API keys (truncated)
+./tools/auth-db key list -d data/auth.db
+
+# List API keys with full key values
+./tools/auth-db key list -d data/auth.db --show-keys
+
+# List roles
+./tools/auth-db role list -d data/auth.db
+
+# List permissions
+./tools/auth-db permission list -d data/auth.db
+
+# List trusted users (for header auth)
+./tools/auth-db user list -d data/auth.db
+
+# Database statistics
+./tools/auth-db info -d data/auth.db
+```
+
+To inspect the main database, use the DuckDB CLI:
 
 ```bash
 # Install DuckDB CLI (if not installed)
 # macOS: brew install duckdb
 # Linux: https://duckdb.org/docs/installation/
 
-# Connect to auth database
-duckdb /tmp/data/auth.db
-
-# View tables
+duckdb data/main.db
 .tables
-
-# View API keys (without hashes)
-SELECT key_id, role_name, created_at, is_active FROM api_keys;
-
-# View roles
-SELECT * FROM roles;
-
-# View permissions
-SELECT * FROM permissions;
+SELECT * FROM my_table LIMIT 10;
 ```
 
 ### Common Issues
@@ -321,14 +342,20 @@ HTTP Request
 
 | Component | Responsibility |
 |-----------|---------------|
-| `module.go` | Caddy module registration, configuration, HTTP routing |
+| `module.go` | Caddy module registration, configuration, HTTP routing, CORS |
 | `config.go` | Configuration structs, response types |
-| `database/manager.go` | Connection pooling, query execution with retry |
+| `database/manager.go` | Connection pooling, auth schema validation |
 | `database/operations.go` | CRUD operations, schema caching |
-| `auth/authorizer.go` | Permission checking against RBAC |
-| `auth/middleware.go` | API key extraction and validation |
+| `auth/authorizer.go` | Permission checking + trusted user lookup |
+| `auth/middleware.go` | API key + trusted-user-header extraction |
 | `handlers/crud.go` | RESTful CRUD operations |
-| `handlers/query.go` | Raw SQL query execution |
+| `handlers/query.go` | Read-only SQL query execution |
+| `handlers/execute.go` | Write SQL execution (requires can_execute) |
+| `handlers/export.go` | SQL → server file → URL (token-efficient) |
+| `handlers/mcp.go` | MCP streamable-HTTP endpoint |
+| `handlers/httpserver.go` | httpserver-compatible POST / endpoint |
+| `handlers/columns.go` | Column schema + statistics endpoint |
+| `handlers/internal_tables.go` | Shared helpers for internal table protection |
 | `formats/*.go` | Response format serialization |
 
 ### Database Schema (Auth)
@@ -344,23 +371,35 @@ CREATE TABLE roles (
 CREATE TABLE permissions (
     id INTEGER PRIMARY KEY,
     role_name VARCHAR REFERENCES roles(role_name),
-    table_name VARCHAR,  -- '*' for all tables
+    table_name VARCHAR,    -- '*' for all tables
     can_create BOOLEAN,
     can_read BOOLEAN,
     can_update BOOLEAN,
     can_delete BOOLEAN,
-    can_query BOOLEAN    -- Raw SQL access
+    can_query BOOLEAN,     -- Read-only SQL access
+    can_execute BOOLEAN    -- Write SQL access (INSERT/UPDATE/DELETE/DDL); added via migrate
 );
 
 -- API Keys table
 CREATE TABLE api_keys (
-    key VARCHAR PRIMARY KEY,  -- Plain text key (or key_id for hashed)
+    key VARCHAR PRIMARY KEY,
     role_name VARCHAR REFERENCES roles(role_name),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP,
     is_active BOOLEAN DEFAULT true
 );
+
+-- Trusted users (for SSO/vouch-proxy header auth)
+CREATE TABLE trusted_users (
+    username   VARCHAR PRIMARY KEY,
+    role_name  VARCHAR REFERENCES roles(role_name),
+    note       VARCHAR,
+    is_active  BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 ```
+
+> **Note:** `can_execute` was added after the initial release. Run `./tools/auth-db migrate -d data/auth.db` to add it to existing databases.
 
 ## Adding Features
 
