@@ -1001,6 +1001,174 @@ func TestExampleQueries_MCP_DatabaseInfo(t *testing.T) {
 	}
 }
 
+// ─── New analytical MCP tools ────────────────────────────────────────────────
+
+func TestExampleQueries_MCP_Summarize_Table(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 9, "tools/call", map[string]interface{}{
+		"name":      "summarize",
+		"arguments": map[string]interface{}{"table": "users"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	// SUMMARIZE returns per-column stats including column_name
+	if !strings.Contains(text, "column_name") {
+		t.Errorf("expected 'column_name' in summarize result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_Summarize_SQL(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 10, "tools/call", map[string]interface{}{
+		"name":      "summarize",
+		"arguments": map[string]interface{}{"sql": "SELECT age FROM users"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "age") {
+		t.Errorf("expected 'age' in summarize-sql result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_Summarize_BothArgs_Error(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 11, "tools/call", map[string]interface{}{
+		"name":      "summarize",
+		"arguments": map[string]interface{}{"table": "users", "sql": "SELECT 1"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error when both table and sql provided, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_Summarize_InternalTable_Blocked(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 12, "tools/call", map[string]interface{}{
+		"name":      "summarize",
+		"arguments": map[string]interface{}{"table": "api_keys"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error for internal table, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_Schema(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 13, "tools/call", map[string]interface{}{
+		"name":      "schema",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	// Should contain users table columns
+	if !strings.Contains(text, "users") {
+		t.Errorf("expected 'users' in schema result, got: %s", text)
+	}
+	// Should NOT contain internal auth tables
+	if strings.Contains(text, "api_keys") {
+		t.Errorf("schema result should not contain internal table 'api_keys', got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_ValueCounts(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 14, "tools/call", map[string]interface{}{
+		"name":      "value_counts",
+		"arguments": map[string]interface{}{"table": "users", "column": "name", "limit": 10},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, `"n"`) {
+		t.Errorf("expected count column 'n' in value_counts result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_ValueCounts_DottedColumn_Rejected(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 15, "tools/call", map[string]interface{}{
+		"name":      "value_counts",
+		"arguments": map[string]interface{}{"table": "users", "column": "schema.name"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error for dotted column name, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_ValueCounts_InternalTable_Blocked(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 16, "tools/call", map[string]interface{}{
+		"name":      "value_counts",
+		"arguments": map[string]interface{}{"table": "roles", "column": "role_name"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error for internal table, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_Sample(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 17, "tools/call", map[string]interface{}{
+		"name":      "sample",
+		"arguments": map[string]interface{}{"table": "users", "n": 3},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "name") {
+		t.Errorf("expected 'name' column in sample result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_Sample_InternalTable_Blocked(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 18, "tools/call", map[string]interface{}{
+		"name":      "sample",
+		"arguments": map[string]interface{}{"table": "permissions"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error for internal table, got: %s", text)
+	}
+}
+
 // ─── Trusted-user-header auth (PR #15) ───────────────────────────────────────
 
 func TestExampleQueries_TrustedUserHeader(t *testing.T) {

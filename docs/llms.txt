@@ -46,6 +46,10 @@ Content-Type: application/json
 | `database_info` | query | Tables, schemas, loaded extensions overview |
 | `list_tables` | query | Tables (and optionally views) with column counts |
 | `describe` | query | Column names and types for a table or view |
+| `schema` | query | **All** tables + column names/types in one call — avoids N `describe` calls |
+| `summarize` | query | Per-column stats (min/max/avg/null%/approx_unique) via DuckDB SUMMARIZE |
+| `value_counts` | query | Top-N distinct values + counts for a column — fast categorical profiling |
+| `sample` | query | Unbiased reservoir sample of rows — better than LIMIT for exploration |
 | `query` | query | Read-only SQL — result capped at `max_rows` (default 200) |
 | `export` | query | Run SQL, write to file, return URL — **use for large result sets** |
 | `execute` | execute | Write SQL: INSERT, UPDATE, DELETE, CREATE TABLE AS SELECT, etc. |
@@ -126,6 +130,65 @@ Response: `"OK: 1 rows affected"`
 }}
 ```
 
+### Tool: `schema` — full schema in one call
+
+Returns all tables and views with their column names and types. Use this instead of calling `describe` N times when exploring a database with many tables.
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+  "name": "schema",
+  "arguments": {}
+}}
+```
+
+Response: `{columns: ["table_catalog","table_name","column_name","data_type","is_nullable"], rows: [...], count: N}`
+
+### Tool: `summarize` — statistical profile
+
+Returns per-column statistics for a table or query result. One call replaces many exploratory queries. Note: performs a full table scan — prefer using with a subquery for large tables.
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{
+  "name": "summarize",
+  "arguments": {"table": "publications"}
+}}
+```
+
+Or on a subquery (much faster for large tables):
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{
+  "name": "summarize",
+  "arguments": {"sql": "SELECT * FROM publications USING SAMPLE 5000 ROWS"}
+}}
+```
+
+Response columns: `column_name`, `column_type`, `min`, `max`, `approx_unique`, `avg`, `std`, `q25`, `q50`, `q75`, `count`, `null_percentage`
+
+### Tool: `value_counts` — categorical profiling
+
+Counts distinct values in a column, sorted by frequency. Use this to understand categorical distributions without writing SQL.
+
+```json
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{
+  "name": "value_counts",
+  "arguments": {"table": "publications", "column": "Language", "limit": 10}
+}}
+```
+
+Response: `{rows: [{value: "eng", n: 170570}, {value: "swe", n: 17534}, ...], count: 10}`
+
+### Tool: `sample` — unbiased row preview
+
+Returns a random sample using DuckDB's reservoir sampler (fixed seed — reproducible). Better than LIMIT because it avoids first-row bias from physical storage order.
+
+```json
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{
+  "name": "sample",
+  "arguments": {"table": "publications", "n": 5}
+}}
+```
+
 ---
 
 ## REST Access
@@ -179,28 +242,44 @@ curl -X POST -H "X-API-Key: KEY" \
 
 ## Token-Saving Strategy for LLMs
 
-| Situation | Recommended approach |
-|-----------|---------------------|
-| Exploring schema | `describe` or `list_tables` MCP tools — metadata only |
-| Counting / aggregating | `query` MCP tool with GROUP BY — result is small |
-| Fetching < 200 rows | `query` MCP tool |
-| Fetching > 200 rows | `export` MCP tool — returns URL, not data |
-| All rows from a table | `export` MCP tool with `SELECT *` |
-| Delivering data to user | `export` → share the URL |
+| Situation | Recommended approach | Why |
+|-----------|---------------------|-----|
+| First look at a new database | `schema` | All tables + columns in one call |
+| Understanding one table's columns | `describe` | Metadata only, no data scanned |
+| Statistical profile of a table | `summarize(sql=... SAMPLE N ROWS)` | Full stats without full scan |
+| Categorical column distribution | `value_counts` | One call instead of writing GROUP BY |
+| Seeing representative rows | `sample` | Unbiased, avoids first-row storage bias |
+| Counting / aggregating | `query` with GROUP BY | Small result |
+| Fetching < 200 rows | `query` | Direct result |
+| Fetching > 200 rows | `export` | Returns URL (~15 tokens), not row data |
+| All rows from a table | `export` with `SELECT *` | Same URL response regardless of size |
+| Delivering data to user | `export` → share the URL | User downloads directly |
 
-**Rule of thumb:** use `query` to explore and understand; use `export` to deliver.
+**Rule of thumb:** use `schema`/`summarize`/`value_counts`/`sample` to understand the data; use `query` for targeted retrieval; use `export` to deliver.
 
 The `export` tool response is always ~15 tokens regardless of result size (1 row or 50 million rows). The returned URL can be passed directly to downstream tools, shared with the user, or used in further processing steps.
+
+**Combining tools efficiently:**
+```
+schema()                          → understand all table structures
+value_counts(table, column)       → identify key categorical dimensions
+summarize(sql="... SAMPLE 5000")  → statistical profile without full scan
+query(sql="SELECT ...")           → targeted retrieval once you know what you need
+export(sql="SELECT ...")          → bulk delivery without context cost
+```
 
 ---
 
 ## Recommended Workflow for LLMs
 
-1. Call `database_info` — understand schemas and table count
-2. Call `list_tables` — enumerate tables in the target schema
-3. Call `describe` on relevant tables — understand columns and types
-4. Call `query` for small exploratory queries and aggregations
-5. Call `export` for any full-table or large-result retrieval
+1. Call `schema` — get all tables + columns in one shot (replaces steps 2+3 below for familiar databases)
+2. Call `list_tables` — enumerate tables with row counts when you need size context
+3. Call `describe` on specific tables when you need detailed column info for one table
+4. Call `value_counts` on categorical columns to understand distributions
+5. Call `summarize` on a sampled subquery to get statistical profiles without a full scan
+6. Call `sample` to preview representative rows before writing targeted queries
+7. Call `query` for targeted SQL once you know what you need
+8. Call `export` for any result set you want to deliver or that exceeds `max_rows`
 
 ---
 
