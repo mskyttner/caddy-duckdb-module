@@ -61,7 +61,13 @@ func NewMCPHandler(
 			mcp.WithDescription(fmt.Sprintf(
 				"Execute a read-only SQL query (SELECT, WITH, FROM, SHOW, DESCRIBE, EXPLAIN). "+
 					"Results are capped at max_rows (default %d) to protect context window size. "+
-					"Use the export tool for large result sets.", maxRows)),
+					"Use the export tool for large result sets. "+
+					"For multi-table joins on large parquet-backed databases: "+
+					"(1) use CTEs to narrow down the key IDs from the most selective filter first, "+
+					"(2) never use SELECT * — project only the columns you need, "+
+					"(3) place the smallest/most selective table on the left side of each join. "+
+					"Pattern: WITH ids AS (SELECT id FROM small_table WHERE filter) "+
+					"SELECT specific_cols FROM ids JOIN large_table USING (id).", maxRows)),
 			mcp.WithString("sql", mcp.Required(), mcp.Description("Read-only SQL statement")),
 			mcp.WithNumber("max_rows", mcp.Description("Max rows to return")),
 		),
