@@ -2,12 +2,8 @@
 -- The file is bind-mounted into the container at /data/diva/.
 ATTACH '/data/diva/diva_oai_normalized.db' AS diva (READ_ONLY);
 
--- Set diva as the default catalog for this connection so that
--- unqualified table names (e.g. SELECT * FROM publications) resolve
--- to diva tables without needing the diva. prefix.
-USE diva;
-
--- Install and load the http_request community extension (needed for api_swepub_classify).
+-- Install and load the http_request community extension.
+-- Must run before macro creation; macros are created in :memory: (default catalog).
 install http_request from community;
 load http_request;
 
@@ -36,7 +32,7 @@ create or replace macro json_safe_str(txt) as
 
 -- Table macro: classify a publication using the Swepub HSV classification API.
 -- Returns: score, code, eng_label, swe_label
--- Example (from DuckDB CLI): FROM api_swepub_classify(title := 'Magnetic resonance');
+-- Example: FROM api_swepub_classify(title := 'Magnetic resonance');
 create or replace macro api_swepub_classify(level := '3', title := NULL, abstract := NULL, keywords := NULL) as table (
 
     with classification as (
@@ -69,3 +65,7 @@ create or replace macro api_swepub_classify(level := '3', title := NULL, abstrac
         eng_label: suggestions."prefLabelByLang".en,
         swe_label: suggestions."prefLabelByLang".sv,
 );
+
+-- Switch default catalog to diva so unqualified table names resolve to diva tables.
+-- Macros created above remain in :memory: and are still callable from any catalog.
+USE diva;
