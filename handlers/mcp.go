@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/tobilg/caddy-duckdb-module/auth"
@@ -60,7 +61,13 @@ func NewMCPHandler(
 			mcp.WithDescription(fmt.Sprintf(
 				"Execute a read-only SQL query (SELECT, WITH, FROM, SHOW, DESCRIBE, EXPLAIN). "+
 					"Results are capped at max_rows (default %d) to protect context window size. "+
-					"Use the export tool for large result sets.", maxRows)),
+					"Use the export tool for large result sets. "+
+					"For multi-table joins on large parquet-backed databases: "+
+					"(1) use CTEs to narrow down the key IDs from the most selective filter first, "+
+					"(2) never use SELECT * — project only the columns you need, "+
+					"(3) place the smallest/most selective table on the left side of each join. "+
+					"Pattern: WITH ids AS (SELECT id FROM small_table WHERE filter) "+
+					"SELECT specific_cols FROM ids JOIN large_table USING (id).", maxRows)),
 			mcp.WithString("sql", mcp.Required(), mcp.Description("Read-only SQL statement")),
 			mcp.WithNumber("max_rows", mcp.Description("Max rows to return")),
 		),
@@ -560,8 +567,12 @@ func NewMCPHandler(
 				if end == 0 {
 					end = start
 				}
+				// Wrap the WHERE filter in a subquery before applying USING SAMPLE.
+				// DuckDB's reservoir sampler silently returns 0 rows when USING SAMPLE
+				// is combined with a WHERE clause directly on parquet-backed views;
+				// materialising the filter in a subquery first avoids this.
 				sql = fmt.Sprintf(
-					"SELECT * FROM %s WHERE %s BETWEEN %d AND %d USING SAMPLE %d ROWS (reservoir, 42)",
+					"SELECT * FROM (SELECT * FROM %s WHERE %s BETWEEN %d AND %d) USING SAMPLE %d ROWS (reservoir, 42)",
 					table, idCol, start, end, n,
 				)
 			} else {
@@ -638,6 +649,10 @@ func queryRowsRaw(dbMgr *database.Manager, sql string, limit int) (cols []string
 				row[col] = nil
 			case []byte:
 				row[col] = string(v)
+			case duckdb.Decimal:
+				// Serialize DECIMAL as a plain float64 so JSON output is a number,
+				// not the raw {Width, Scale, Value} struct from the Go driver.
+				row[col] = v.Float64()
 			default:
 				row[col] = v
 			}

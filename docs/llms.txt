@@ -363,6 +363,79 @@ export(sql="SELECT ...")                    → bulk delivery without context co
 
 ---
 
+## Efficient Multi-Table Queries on Large Parquet Databases
+
+When querying databases backed by large parquet files (hundreds of millions of rows),
+naive multi-table joins will time out or fail because they require disk spill.
+Use this CTE-first pattern instead:
+
+**Rules:**
+1. **Start with the smallest, most selective table** — narrow down the key IDs first
+2. **Never use `SELECT *`** — project only the columns you actually need
+3. **Use CTEs to stage results** — each CTE should be smaller than the previous
+4. **Filter before joining** — use `WHERE x IN (FROM cte SELECT id)` to push filters down
+5. **Use DuckDB's FROM-first syntax** — `FROM t JOIN ... SELECT ...` is equivalent and often clearer
+
+**Pattern — find works by a specific author at a specific institution:**
+
+```sql
+WITH author_work_ids AS (
+    -- Start with authors (small table), filter to a person + institution
+    FROM authors a
+    INNER JOIN works_authorships wa USING (author_id)
+    SELECT DISTINCT wa.work_id
+    WHERE a.display_name ILIKE '%Robert Juhasz%'
+      AND a.last_known_institution_display_name ILIKE '%KTH%'
+),
+
+citation_counts AS (
+    -- Count only citations to those specific works — not the full 1.4B row table
+    FROM works_referenced_works
+    SELECT
+        referenced_work_id AS work_id,
+        COUNT(*) AS citations_in_graph
+    WHERE referenced_work_id IN (FROM author_work_ids SELECT work_id)
+    GROUP BY referenced_work_id
+)
+
+-- Final join is small × small × small
+FROM author_work_ids aw
+INNER JOIN works w USING (work_id)
+LEFT JOIN citation_counts cc USING (work_id)
+SELECT
+    w.work_id,
+    w.doi,
+    w.display_name,
+    w.publication_year,
+    w.cited_by_count,
+    COALESCE(cc.citations_in_graph, 0) AS citations_in_graph,
+    w.cited_by_count - COALESCE(cc.citations_in_graph, 0) AS diff
+ORDER BY w.cited_by_count DESC
+```
+
+**Why this works:**
+- `authors WHERE display_name ILIKE ...` → a handful of rows
+- `works_authorships WHERE author_id IN (...)` → a few hundred rows (one per work)
+- `works_referenced_works WHERE referenced_work_id IN (...)` → only the citations for those works
+- Final joins are all between small intermediate results — no large table scans needed
+
+**What NOT to do (will time out or spill to disk):**
+
+```sql
+-- BAD: joins two billion-row tables without narrowing first
+SELECT w.*, pl.source_is_core
+FROM works_authorships wa
+JOIN works_primary_location pl ON wa.work_id = pl.work_id
+WHERE wa.institution_id = 86987016
+```
+
+**When you must join large tables**, check the server's `temp_directory` configuration —
+without a writable temp directory, any query that spills to disk will fail with a
+permission error. Use `column_search` and `sample` to understand the data shape before
+writing joins.
+
+---
+
 ## Error Handling
 
 | Code | Meaning | Action |
