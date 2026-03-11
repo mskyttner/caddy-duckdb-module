@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/tobilg/caddy-duckdb-module/auth"
@@ -642,6 +643,10 @@ func queryRowsRaw(dbMgr *database.Manager, sql string, limit int) (cols []string
 				row[col] = nil
 			case []byte:
 				row[col] = string(v)
+			case duckdb.Decimal:
+				// Serialize DECIMAL as a plain float64 so JSON output is a number,
+				// not the raw {Width, Scale, Value} struct from the Go driver.
+				row[col] = v.Float64()
 			default:
 				row[col] = v
 			}
