@@ -19,16 +19,19 @@ import (
 // X-API-Key (or use trusted-user-header) exactly as with the REST API.
 //
 // Exposed tools:
-//   - query(sql, max_rows?)           read-only SQL, result capped at maxRows
-//   - execute(sql)                    write SQL, requires OperationExecute
-//   - export(sql, format?, ttl?)      write result to file, returns URL
+//   - query(sql, max_rows?)                read-only SQL, result capped at maxRows
+//   - execute(sql)                         write SQL, requires OperationExecute
+//   - export(sql, format?, ttl?)           write result to file, returns URL
 //   - list_tables(schema?, include_views?)
 //   - describe(table)
 //   - database_info()
-//   - summarize(table? | sql?)        per-column statistics via DuckDB SUMMARIZE
-//   - schema()                        all tables+columns in one call
+//   - summarize(table? | sql?)             per-column statistics via DuckDB SUMMARIZE
+//   - schema(table_pattern?, compact?)     all tables+columns; filter + compact dict output
 //   - value_counts(table, column, limit?)  GROUP BY frequency
-//   - sample(table, n?)               reservoir-sampled rows
+//   - sample(table, n?)                    reservoir-sampled rows
+//   - column_search(column_name)           find tables that contain a column by name
+//   - row_counts(table?)                   row count for one or all tables
+//   - sample_by_id_range(table, id_column?, start?, end?, n?)  range-filtered reservoir sample
 type MCPHandler struct {
 	httpHandler http.Handler
 }
@@ -266,26 +269,83 @@ func NewMCPHandler(
 	// --- schema ---
 	mcpSrv.AddTool(
 		mcp.NewTool("schema",
-			mcp.WithDescription("Return all tables and views with column names and types in one call. "+
+			mcp.WithDescription("Return tables and views with column names and types. "+
 				"More efficient than calling describe() N times for databases with many tables. "+
+				"Use table_pattern (LIKE filter, e.g. 'work%') to limit results. "+
+				"Set compact='true' for a token-efficient dict format: {\"table\":[\"col:TYPE\",...]}. "+
 				"Spans all attached databases."),
+			mcp.WithString("table_pattern", mcp.Description("LIKE pattern to filter table names (e.g. 'works', 'work%')")),
+			mcp.WithString("compact", mcp.Description("Return compact dict {table:[col:TYPE,...]} instead of flat rows. 'true' or 'false' (default: false)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			role := auth.GetRoleFromContext(ctx)
 			if ok, _ := authorizer.CheckPermission(role, "*", auth.OperationQuery); !ok {
 				return mcp.NewToolResultText("Error: insufficient query permission"), nil
 			}
-			sql := `
-				SELECT c.table_catalog, c.table_name, c.column_name, c.data_type, c.is_nullable
+			tablePattern := req.GetString("table_pattern", "")
+			compact := req.GetString("compact", "false") == "true"
+
+			patternClause := ""
+			if tablePattern != "" {
+				// Use LIKE pattern; escape single quotes defensively
+				safe := strings.ReplaceAll(tablePattern, "'", "''")
+				patternClause = fmt.Sprintf(" AND c.table_name LIKE '%s'", safe)
+			}
+			sql := fmt.Sprintf(`
+				SELECT c.table_catalog, c.table_name, c.column_name, c.data_type
 				FROM information_schema.columns c
 				JOIN information_schema.tables t
 					ON c.table_name = t.table_name AND c.table_schema = t.table_schema
 				WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
 				  AND t.table_type IN ('BASE TABLE', 'VIEW')
 				  AND c.table_name NOT IN ('api_keys', 'roles', 'permissions', 'trusted_users')
+				%s
 				ORDER BY c.table_catalog, c.table_name, c.ordinal_position
-			`
-			return runQueryTool(dbMgr, sql, 10000)
+			`, patternClause)
+
+			if !compact {
+				return runQueryTool(dbMgr, sql, 10000)
+			}
+
+			// Compact mode: build {"table_name": ["col:TYPE", ...], ...}
+			_, rowData, _, err := queryRowsRaw(dbMgr, sql, 10000)
+			if err != nil {
+				return mcp.NewToolResultText("Error: " + err.Error()), nil
+			}
+			// Use ordered insertion to preserve table order
+			type entry struct {
+				name string
+				cols []string
+			}
+			seen := map[string]int{}
+			var order []entry
+			for _, row := range rowData {
+				tableName, _ := row["table_name"].(string)
+				colName, _ := row["column_name"].(string)
+				dataType, _ := row["data_type"].(string)
+				colEntry := colName + ":" + dataType
+				if idx, ok := seen[tableName]; ok {
+					order[idx].cols = append(order[idx].cols, colEntry)
+				} else {
+					seen[tableName] = len(order)
+					order = append(order, entry{name: tableName, cols: []string{colEntry}})
+				}
+			}
+			// Build ordered JSON manually to preserve table insertion order
+			var sb strings.Builder
+			sb.WriteByte('{')
+			for i, e := range order {
+				if i > 0 {
+					sb.WriteByte(',')
+				}
+				nameB, _ := json.Marshal(e.name)
+				sb.Write(nameB)
+				sb.WriteByte(':')
+				colsB, _ := json.Marshal(e.cols)
+				sb.Write(colsB)
+			}
+			sb.WriteByte('}')
+			return mcp.NewToolResultText(sb.String()), nil
 		},
 	)
 
@@ -365,6 +425,153 @@ func NewMCPHandler(
 		},
 	)
 
+	// --- column_search ---
+	mcpSrv.AddTool(
+		mcp.NewTool("column_search",
+			mcp.WithDescription("Find which tables contain a column matching the given name (case-insensitive LIKE search). "+
+				"Useful when you know a field name but not which table it lives in."),
+			mcp.WithString("column_name", mcp.Required(), mcp.Description("Column name or LIKE pattern (e.g. 'work_id', '%author%')")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			role := auth.GetRoleFromContext(ctx)
+			if ok, _ := authorizer.CheckPermission(role, "*", auth.OperationQuery); !ok {
+				return mcp.NewToolResultText("Error: insufficient query permission"), nil
+			}
+			colName := req.GetString("column_name", "")
+			if strings.TrimSpace(colName) == "" {
+				return mcp.NewToolResultText("Error: column_name is required"), nil
+			}
+			safe := strings.ReplaceAll(colName, "'", "''")
+			sql := fmt.Sprintf(`
+				SELECT c.table_catalog, c.table_name, c.column_name, c.data_type, c.ordinal_position
+				FROM information_schema.columns c
+				JOIN information_schema.tables t
+					ON c.table_name = t.table_name AND c.table_schema = t.table_schema
+				WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
+				  AND t.table_type IN ('BASE TABLE', 'VIEW')
+				  AND c.table_name NOT IN ('api_keys', 'roles', 'permissions', 'trusted_users')
+				  AND LOWER(c.column_name) LIKE LOWER('%s')
+				ORDER BY c.table_name, c.ordinal_position
+			`, safe)
+			return runQueryTool(dbMgr, sql, 500)
+		},
+	)
+
+	// --- row_counts ---
+	mcpSrv.AddTool(
+		mcp.NewTool("row_counts",
+			mcp.WithDescription("Return row count(s). If 'table' is given, count that table only. "+
+				"If omitted, counts all non-internal tables. "+
+				"For parquet-backed views DuckDB reads row-group metadata — typically fast even for billions of rows."),
+			mcp.WithString("table", mcp.Description("Table or view name (omit for all tables)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			role := auth.GetRoleFromContext(ctx)
+			if ok, _ := authorizer.CheckPermission(role, "*", auth.OperationQuery); !ok {
+				return mcp.NewToolResultText("Error: insufficient query permission"), nil
+			}
+			table := req.GetString("table", "")
+			if table != "" {
+				if !isSimpleIdentifier(table) {
+					return mcp.NewToolResultText("Error: invalid table name"), nil
+				}
+				tablePart := table
+				if idx := strings.LastIndex(table, "."); idx >= 0 {
+					tablePart = table[idx+1:]
+				}
+				if auth.IsInternalTable(tablePart) {
+					return mcp.NewToolResultText("Error: access to internal auth tables is forbidden"), nil
+				}
+				sql := fmt.Sprintf("SELECT '%s' AS table_name, COUNT(*) AS row_count FROM %s", table, table)
+				return runQueryTool(dbMgr, sql, 1)
+			}
+			// All tables: query names from information_schema then build UNION ALL
+			listSQL := `
+				SELECT t.table_name
+				FROM information_schema.tables t
+				WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
+				  AND t.table_type IN ('BASE TABLE', 'VIEW')
+				  AND t.table_name NOT IN ('api_keys', 'roles', 'permissions', 'trusted_users')
+				ORDER BY t.table_name
+			`
+			_, tableRows, _, err := queryRowsRaw(dbMgr, listSQL, 2000)
+			if err != nil {
+				return mcp.NewToolResultText("Error: " + err.Error()), nil
+			}
+			if len(tableRows) == 0 {
+				return mcp.NewToolResultText(`{"tables":[]}`), nil
+			}
+			var parts []string
+			for _, row := range tableRows {
+				name, _ := row["table_name"].(string)
+				if name == "" {
+					continue
+				}
+				parts = append(parts, fmt.Sprintf("SELECT '%s' AS table_name, COUNT(*) AS row_count FROM %s",
+					strings.ReplaceAll(name, "'", "''"), name))
+			}
+			sql := strings.Join(parts, " UNION ALL ") + " ORDER BY table_name"
+			return runQueryTool(dbMgr, sql, 2000)
+		},
+	)
+
+	// --- sample_by_id_range ---
+	mcpSrv.AddTool(
+		mcp.NewTool("sample_by_id_range",
+			mcp.WithDescription("Return a reservoir-sampled subset of rows filtered by an integer ID range. "+
+				"Efficient for parquet-backed tables sorted by an ID column: DuckDB uses row-group "+
+				"statistics to skip out-of-range groups before sampling. "+
+				"Typical use: explore a slice of a large table without a full scan."),
+			mcp.WithString("table", mcp.Required(), mcp.Description("Table or view name")),
+			mcp.WithString("id_column", mcp.Description("Integer column to filter on (default: work_id)")),
+			mcp.WithNumber("start", mcp.Description("Range start (inclusive)")),
+			mcp.WithNumber("end", mcp.Description("Range end (inclusive)")),
+			mcp.WithNumber("n", mcp.Description("Number of rows to sample (default 5)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			role := auth.GetRoleFromContext(ctx)
+			if ok, _ := authorizer.CheckPermission(role, "*", auth.OperationQuery); !ok {
+				return mcp.NewToolResultText("Error: insufficient query permission"), nil
+			}
+			table := req.GetString("table", "")
+			if !isSimpleIdentifier(table) {
+				return mcp.NewToolResultText("Error: invalid table name"), nil
+			}
+			tablePart := table
+			if idx := strings.LastIndex(table, "."); idx >= 0 {
+				tablePart = table[idx+1:]
+			}
+			if auth.IsInternalTable(tablePart) {
+				return mcp.NewToolResultText("Error: access to internal auth tables is forbidden"), nil
+			}
+			idCol := req.GetString("id_column", "work_id")
+			if !isSimpleIdentifier(idCol) {
+				return mcp.NewToolResultText("Error: invalid id_column name"), nil
+			}
+			n := req.GetInt("n", 5)
+			if n <= 0 || n > 10000 {
+				n = 5
+			}
+
+			start := req.GetInt("start", 0)
+			end := req.GetInt("end", 0)
+			var sql string
+			if start != 0 || end != 0 {
+				if end == 0 {
+					end = start
+				}
+				sql = fmt.Sprintf(
+					"SELECT * FROM %s WHERE %s BETWEEN %d AND %d USING SAMPLE %d ROWS (reservoir, 42)",
+					table, idCol, start, end, n,
+				)
+			} else {
+				// No range specified — fall back to plain sample
+				sql = fmt.Sprintf("SELECT * FROM %s USING SAMPLE %d ROWS (reservoir, 42)", table, n)
+			}
+			return runQueryTool(dbMgr, sql, n)
+		},
+	)
+
 	// Propagate Caddy auth context into MCP tool handler contexts.
 	contextFunc := func(ctx context.Context, r *http.Request) context.Context {
 		if apiKey := auth.GetAPIKeyFromContext(r.Context()); apiKey != nil {
@@ -389,36 +596,34 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.httpHandler.ServeHTTP(w, r)
 }
 
-// runQueryTool executes sql, reads up to limit rows, and returns them as JSON text.
-func runQueryTool(dbMgr *database.Manager, sql string, limit int) (*mcp.CallToolResult, error) {
+// queryRowsRaw executes sql, reads up to limit rows, and returns raw column/row data.
+func queryRowsRaw(dbMgr *database.Manager, sql string, limit int) (cols []string, data []map[string]any, truncated bool, err error) {
 	rows, err := dbMgr.QueryMain(sql)
 	if err != nil {
-		return mcp.NewToolResultText("Error: " + err.Error()), nil
+		return nil, nil, false, err
 	}
 	defer rows.Close()
 
-	cols, err := rows.Columns()
+	cols, err = rows.Columns()
 	if err != nil {
-		return mcp.NewToolResultText("Error: " + err.Error()), nil
+		return nil, nil, false, err
 	}
 
-	values := make([]interface{}, len(cols))
-	ptrs := make([]interface{}, len(cols))
+	values := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
 	for i := range cols {
 		ptrs[i] = &values[i]
 	}
 
-	var data []map[string]interface{}
-	truncated := false
 	for rows.Next() {
 		if len(data) >= limit {
 			truncated = true
 			break
 		}
-		if err := rows.Scan(ptrs...); err != nil {
-			return mcp.NewToolResultText("Error: " + err.Error()), nil
+		if err = rows.Scan(ptrs...); err != nil {
+			return nil, nil, false, err
 		}
-		row := make(map[string]interface{}, len(cols))
+		row := make(map[string]any, len(cols))
 		for i, col := range cols {
 			switch v := values[i].(type) {
 			case nil:
@@ -431,8 +636,17 @@ func runQueryTool(dbMgr *database.Manager, sql string, limit int) (*mcp.CallTool
 		}
 		data = append(data, row)
 	}
+	return cols, data, truncated, nil
+}
 
-	out := map[string]interface{}{
+// runQueryTool executes sql, reads up to limit rows, and returns them as JSON text.
+func runQueryTool(dbMgr *database.Manager, sql string, limit int) (*mcp.CallToolResult, error) {
+	cols, data, truncated, err := queryRowsRaw(dbMgr, sql, limit)
+	if err != nil {
+		return mcp.NewToolResultText("Error: " + err.Error()), nil
+	}
+
+	out := map[string]any{
 		"columns": cols,
 		"rows":    data,
 		"count":   len(data),

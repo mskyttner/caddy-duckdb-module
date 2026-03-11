@@ -1169,6 +1169,186 @@ func TestExampleQueries_MCP_Sample_InternalTable_Blocked(t *testing.T) {
 	}
 }
 
+// ─── schema improvements ──────────────────────────────────────────────────────
+
+func TestExampleQueries_MCP_Schema_TablePattern(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 19, "tools/call", map[string]interface{}{
+		"name":      "schema",
+		"arguments": map[string]interface{}{"table_pattern": "users"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "users") {
+		t.Errorf("expected 'users' in filtered schema result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_Schema_Compact(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 20, "tools/call", map[string]interface{}{
+		"name":      "schema",
+		"arguments": map[string]interface{}{"compact": "true"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	// Compact output should be a JSON object with table names as keys, not flat rows
+	if !strings.Contains(text, "users") {
+		t.Errorf("expected 'users' in compact schema result, got: %s", text)
+	}
+	// Compact format should NOT contain the flat "columns" array wrapper
+	if strings.Contains(text, `"columns"`) {
+		t.Errorf("compact schema result should not contain 'columns' wrapper, got: %s", text)
+	}
+	// Should contain col:TYPE entries
+	if !strings.Contains(text, ":") {
+		t.Errorf("compact schema result should contain 'col:TYPE' entries, got: %s", text)
+	}
+	// Should not expose internal tables
+	if strings.Contains(text, "api_keys") {
+		t.Errorf("compact schema result should not contain 'api_keys', got: %s", text)
+	}
+}
+
+// ─── column_search ────────────────────────────────────────────────────────────
+
+func TestExampleQueries_MCP_ColumnSearch(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 21, "tools/call", map[string]interface{}{
+		"name":      "column_search",
+		"arguments": map[string]interface{}{"column_name": "name"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "users") {
+		t.Errorf("expected 'users' table in column_search result for 'name', got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_ColumnSearch_Empty(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 22, "tools/call", map[string]interface{}{
+		"name":      "column_search",
+		"arguments": map[string]interface{}{"column_name": ""},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error for empty column_name, got: %s", text)
+	}
+}
+
+// ─── row_counts ───────────────────────────────────────────────────────────────
+
+func TestExampleQueries_MCP_RowCounts_SingleTable(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 23, "tools/call", map[string]interface{}{
+		"name":      "row_counts",
+		"arguments": map[string]interface{}{"table": "users"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "row_count") {
+		t.Errorf("expected 'row_count' in result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_RowCounts_AllTables(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 24, "tools/call", map[string]interface{}{
+		"name":      "row_counts",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "users") {
+		t.Errorf("expected 'users' in all-table row_counts, got: %s", text)
+	}
+	if strings.Contains(text, "api_keys") {
+		t.Errorf("row_counts should not expose internal table 'api_keys', got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_RowCounts_InternalTable_Blocked(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 25, "tools/call", map[string]interface{}{
+		"name":      "row_counts",
+		"arguments": map[string]interface{}{"table": "api_keys"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error for internal table, got: %s", text)
+	}
+}
+
+// ─── sample_by_id_range ───────────────────────────────────────────────────────
+
+func TestExampleQueries_MCP_SampleByIdRange(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	// Create a table with integer id for range sampling
+	_, err := d.dbMgr.ExecMain(`CREATE TABLE items AS SELECT range AS item_id, 'val'||range AS label FROM range(1, 101)`)
+	if err != nil {
+		t.Fatalf("setup items table: %v", err)
+	}
+
+	resp := mcpCall(t, d, 26, "tools/call", map[string]interface{}{
+		"name": "sample_by_id_range",
+		"arguments": map[string]interface{}{
+			"table":     "items",
+			"id_column": "item_id",
+			"start":     10,
+			"end":       50,
+			"n":         5,
+		},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "item_id") {
+		t.Errorf("expected 'item_id' in sample_by_id_range result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_SampleByIdRange_InternalTable_Blocked(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 27, "tools/call", map[string]interface{}{
+		"name":      "sample_by_id_range",
+		"arguments": map[string]interface{}{"table": "roles"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error for internal table, got: %s", text)
+	}
+}
+
 // ─── Trusted-user-header auth (PR #15) ───────────────────────────────────────
 
 func TestExampleQueries_TrustedUserHeader(t *testing.T) {
