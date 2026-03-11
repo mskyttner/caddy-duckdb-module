@@ -572,6 +572,14 @@ func NewMCPHandler(
 		},
 	)
 
+	// --- user-defined table macros ---
+	// Enumerate macros at startup and register each as an MCP tool.
+	if macros, err := discoverTableMacros(dbMgr); err == nil {
+		for _, m := range macros {
+			registerMacroTool(mcpSrv, dbMgr, authorizer, maxRows, m)
+		}
+	}
+
 	// Propagate Caddy auth context into MCP tool handler contexts.
 	contextFunc := func(ctx context.Context, r *http.Request) context.Context {
 		if apiKey := auth.GetAPIKeyFromContext(r.Context()); apiKey != nil {
@@ -671,4 +679,141 @@ func isSimpleIdentifier(s string) bool {
 		}
 	}
 	return len(s) > 0
+}
+
+// builtinMCPToolNames is the set of tool names reserved for built-in tools.
+// User macro names that conflict are skipped.
+var builtinMCPToolNames = map[string]bool{
+	"query": true, "execute": true, "export": true,
+	"list_tables": true, "describe": true, "database_info": true,
+	"summarize": true, "schema": true, "value_counts": true, "sample": true,
+	"column_search": true, "row_counts": true, "sample_by_id_range": true,
+}
+
+// macroInfo holds metadata for a user-defined DuckDB table macro.
+type macroInfo struct {
+	Name       string
+	Params     []string // parameter names in order
+	ParamTypes []string // SQL type for each parameter
+	Definition string   // truncated SQL body (for tool description)
+}
+
+// discoverTableMacros queries duckdb_functions() for user-defined table macros.
+// It uses to_json() to convert the VARCHAR[] parameter columns to JSON strings
+// that are safe to unmarshal regardless of how the DuckDB Go driver serialises arrays.
+func discoverTableMacros(dbMgr *database.Manager) ([]macroInfo, error) {
+	sql := `
+		SELECT function_name,
+		       to_json(parameters)::varchar   AS params_json,
+		       to_json(parameter_types)::varchar AS types_json,
+		       macro_definition
+		FROM duckdb_functions()
+		WHERE function_type = 'table_macro'
+		  AND database_name NOT IN ('system', 'temp')
+		ORDER BY function_name
+	`
+	_, rows, _, err := queryRowsRaw(dbMgr, sql, 1000)
+	if err != nil {
+		return nil, err
+	}
+	var macros []macroInfo
+	for _, row := range rows {
+		name, _ := row["function_name"].(string)
+		if name == "" {
+			continue
+		}
+		var params, types []string
+		if v, _ := row["params_json"].(string); v != "" && v != "null" {
+			_ = json.Unmarshal([]byte(v), &params)
+		}
+		if v, _ := row["types_json"].(string); v != "" && v != "null" {
+			_ = json.Unmarshal([]byte(v), &types)
+		}
+		def, _ := row["macro_definition"].(string)
+		if len(def) > 300 {
+			def = def[:300] + "…"
+		}
+		macros = append(macros, macroInfo{
+			Name:       name,
+			Params:     params,
+			ParamTypes: types,
+			Definition: def,
+		})
+	}
+	return macros, nil
+}
+
+// registerMacroTool adds a user-defined table macro as an MCP tool.
+// Each parameter becomes an optional MCP argument (string or number based on SQL type).
+// The call uses named-argument syntax so params with defaults can be omitted.
+func registerMacroTool(srv *mcpserver.MCPServer, dbMgr *database.Manager, authorizer *auth.Authorizer, maxRows int, m macroInfo) {
+	if builtinMCPToolNames[m.Name] {
+		return // don't shadow built-in tools
+	}
+	opts := []mcp.ToolOption{
+		mcp.WithDescription(fmt.Sprintf("User-defined table macro. SQL: %s", m.Definition)),
+	}
+	for i, param := range m.Params {
+		sqlType := "VARCHAR"
+		if i < len(m.ParamTypes) {
+			sqlType = m.ParamTypes[i]
+		}
+		desc := mcp.Description("SQL type: " + sqlType)
+		if isNumericSQLType(sqlType) {
+			opts = append(opts, mcp.WithNumber(param, desc))
+		} else {
+			opts = append(opts, mcp.WithString(param, desc))
+		}
+	}
+
+	macro := m // capture for closure
+	srv.AddTool(mcp.NewTool(macro.Name, opts...), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		role := auth.GetRoleFromContext(ctx)
+		if ok, _ := authorizer.CheckPermission(role, "*", auth.OperationQuery); !ok {
+			return mcp.NewToolResultText("Error: insufficient query permission"), nil
+		}
+		// Build named-arg call using only provided params so DuckDB defaults apply
+		// for missing args: SELECT * FROM macro(p1 := 'val', p2 := 42)
+		provided := req.GetArguments()
+		var args []string
+		for _, param := range macro.Params {
+			rawVal, ok := provided[param]
+			if !ok {
+				continue // omit — DuckDB will use the declared default
+			}
+			// Use the raw JSON value type to determine quoting rather than the
+			// SQL declared type, because DuckDB reports NULL types for params
+			// whose type is inferred at call time from their default value.
+			switch v := rawVal.(type) {
+			case float64:
+				// JSON number: pass unquoted (integer if whole, float otherwise)
+				if v == float64(int64(v)) {
+					args = append(args, fmt.Sprintf("%s := %d", param, int64(v)))
+				} else {
+					args = append(args, fmt.Sprintf("%s := %g", param, v))
+				}
+			case bool:
+				args = append(args, fmt.Sprintf("%s := %t", param, v))
+			default:
+				// String (or unknown): single-quote escape
+				s := req.GetString(param, "")
+				safe := strings.ReplaceAll(s, "'", "''")
+				args = append(args, fmt.Sprintf("%s := '%s'", param, safe))
+			}
+		}
+		sql := fmt.Sprintf("SELECT * FROM %s(%s)", macro.Name, strings.Join(args, ", "))
+		return runQueryTool(dbMgr, sql, maxRows)
+	})
+}
+
+// isNumericSQLType returns true for SQL types that should be passed as numbers.
+func isNumericSQLType(t string) bool {
+	t = strings.ToUpper(strings.TrimSpace(t))
+	for _, prefix := range []string{"INT", "BIGINT", "SMALLINT", "TINYINT", "HUGEINT",
+		"DOUBLE", "FLOAT", "REAL", "DECIMAL", "NUMERIC"} {
+		if strings.HasPrefix(t, prefix) {
+			return true
+		}
+	}
+	return false
 }

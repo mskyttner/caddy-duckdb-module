@@ -1349,6 +1349,81 @@ func TestExampleQueries_MCP_SampleByIdRange_InternalTable_Blocked(t *testing.T) 
 	}
 }
 
+// ─── user-defined table macros ────────────────────────────────────────────────
+
+func TestExampleQueries_MCP_TableMacro_Registered(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	// Create a simple table macro with no external dependencies.
+	_, err := d.dbMgr.ExecMain(`
+		CREATE OR REPLACE MACRO top_items(n := 5) AS TABLE
+		  SELECT range AS id, 'item'||range AS label FROM range(1, n+1);
+	`)
+	if err != nil {
+		t.Fatalf("create macro: %v", err)
+	}
+
+	// Re-provision the MCP handler so it discovers the new macro.
+	// The handler discovers macros at construction time, so we rebuild it.
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, 200)
+
+	// The macro should appear in the tools list.
+	resp := mcpCall(t, d, 28, "tools/list", map[string]interface{}{})
+	result := resp["result"].(map[string]interface{})
+	toolsRaw := result["tools"].([]interface{})
+	var found bool
+	for _, tool := range toolsRaw {
+		if tool.(map[string]interface{})["name"] == "top_items" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'top_items' macro in tools list")
+	}
+
+	// Call the macro tool.
+	resp = mcpCall(t, d, 29, "tools/call", map[string]interface{}{
+		"name":      "top_items",
+		"arguments": map[string]interface{}{"n": 3},
+	})
+	result = resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "label") {
+		t.Errorf("expected 'label' column in macro result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_TableMacro_OmittedParamUsesDefault(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	_, err := d.dbMgr.ExecMain(`
+		CREATE OR REPLACE MACRO top_items(n := 5) AS TABLE
+		  SELECT range AS id FROM range(1, n+1);
+	`)
+	if err != nil {
+		t.Fatalf("create macro: %v", err)
+	}
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, 200)
+
+	// Call without providing n — should use the default (5) and return 5 rows.
+	resp := mcpCall(t, d, 30, "tools/call", map[string]interface{}{
+		"name":      "top_items",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if strings.Contains(text, "Error") {
+		t.Errorf("unexpected error when omitting default param: %s", text)
+	}
+	if !strings.Contains(text, `"count":5`) {
+		t.Errorf("expected 5 rows with default param, got: %s", text)
+	}
+}
+
 // ─── Trusted-user-header auth (PR #15) ───────────────────────────────────────
 
 func TestExampleQueries_TrustedUserHeader(t *testing.T) {
