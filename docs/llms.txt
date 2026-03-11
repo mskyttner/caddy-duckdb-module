@@ -46,10 +46,13 @@ Content-Type: application/json
 | `database_info` | query | Tables, schemas, loaded extensions overview |
 | `list_tables` | query | Tables (and optionally views) with column counts |
 | `describe` | query | Column names and types for a table or view |
-| `schema` | query | **All** tables + column names/types in one call — avoids N `describe` calls |
+| `schema` | query | Tables + column names/types — filter with `table_pattern`, compact dict with `compact=true` |
 | `summarize` | query | Per-column stats (min/max/avg/null%/approx_unique) via DuckDB SUMMARIZE |
 | `value_counts` | query | Top-N distinct values + counts for a column — fast categorical profiling |
 | `sample` | query | Unbiased reservoir sample of rows — better than LIMIT for exploration |
+| `column_search` | query | Find which tables contain a column matching a name/LIKE pattern |
+| `row_counts` | query | Row count for one table or all tables (fast on parquet-backed views) |
+| `sample_by_id_range` | query | Reservoir sample filtered by integer ID range — efficient parquet row-group skipping |
 | `query` | query | Read-only SQL — result capped at `max_rows` (default 200) |
 | `export` | query | Run SQL, write to file, return URL — **use for large result sets** |
 | `execute` | execute | Write SQL: INSERT, UPDATE, DELETE, CREATE TABLE AS SELECT, etc. |
@@ -132,16 +135,86 @@ Response: `"OK: 1 rows affected"`
 
 ### Tool: `schema` — full schema in one call
 
-Returns all tables and views with their column names and types. Use this instead of calling `describe` N times when exploring a database with many tables.
+Returns tables and views with column names and types. Use instead of calling `describe` N times.
+
+**Compact mode** (`compact=true`) returns a token-efficient dict `{"table":["col:TYPE",...]}` — ~70% fewer tokens than the default flat-row format. For databases with many tables, always prefer compact mode.
+
+**Filter by name** (`table_pattern`) accepts a LIKE pattern (e.g. `work%`) to limit results to specific tables.
 
 ```json
 {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
   "name": "schema",
+  "arguments": {"compact": "true"}
+}}
+```
+
+Compact response: `{"works":["work_id:BIGINT","doi:VARCHAR",...], "authors":["author_id:BIGINT",...]}`
+
+With filter:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+  "name": "schema",
+  "arguments": {"table_pattern": "work%", "compact": "true"}
+}}
+```
+
+### Tool: `column_search` — find tables by column name
+
+Find which tables contain a column matching the given name (case-insensitive LIKE search). Useful when you know a field name but not which table it lives in.
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+  "name": "column_search",
+  "arguments": {"column_name": "work_id"}
+}}
+```
+
+Or with a wildcard:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+  "name": "column_search",
+  "arguments": {"column_name": "%author%"}
+}}
+```
+
+Response: `{columns: ["table_catalog","table_name","column_name","data_type","ordinal_position"], rows: [...], count: N}`
+
+### Tool: `row_counts` — fast row counts
+
+Returns row counts for one table or all non-internal tables. For parquet-backed views DuckDB reads row-group metadata, making this fast even for billions of rows.
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+  "name": "row_counts",
   "arguments": {}
 }}
 ```
 
-Response: `{columns: ["table_catalog","table_name","column_name","data_type","is_nullable"], rows: [...], count: N}`
+Single table:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+  "name": "row_counts",
+  "arguments": {"table": "works"}
+}}
+```
+
+Response: `{rows: [{table_name: "authors", row_count: 12345678}, ...], count: N}`
+
+### Tool: `sample_by_id_range` — efficient range-filtered sampling
+
+Reservoir-samples rows filtered by an integer ID range. Efficient for parquet-backed tables sorted by an ID column: DuckDB uses row-group statistics to skip out-of-range groups before sampling.
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+  "name": "sample_by_id_range",
+  "arguments": {"table": "works", "id_column": "work_id", "start": 100000000, "end": 200000000, "n": 10}
+}}
+```
+
+Parameters: `table` (required), `id_column` (default: `work_id`), `start`, `end`, `n` (default 5). If start/end are omitted, falls back to a plain reservoir sample.
 
 ### Tool: `summarize` — statistical profile
 
@@ -244,11 +317,15 @@ curl -X POST -H "X-API-Key: KEY" \
 
 | Situation | Recommended approach | Why |
 |-----------|---------------------|-----|
-| First look at a new database | `schema` | All tables + columns in one call |
+| First look at a new database | `schema(compact=true)` | Compact dict — ~70% fewer tokens than flat rows |
+| Only a few specific tables | `schema(table_pattern='prefix%', compact=true)` | Filter + compact — minimal tokens |
 | Understanding one table's columns | `describe` | Metadata only, no data scanned |
+| Finding which table has a column | `column_search(column_name)` | One call, no SQL needed |
+| Row counts for all tables | `row_counts` | Fast on parquet (uses row-group metadata) |
 | Statistical profile of a table | `summarize(sql=... SAMPLE N ROWS)` | Full stats without full scan |
 | Categorical column distribution | `value_counts` | One call instead of writing GROUP BY |
 | Seeing representative rows | `sample` | Unbiased, avoids first-row storage bias |
+| Sampling a subset by ID range | `sample_by_id_range` | Row-group skipping on sorted parquet |
 | Counting / aggregating | `query` with GROUP BY | Small result |
 | Fetching < 200 rows | `query` | Direct result |
 | Fetching > 200 rows | `export` | Returns URL (~15 tokens), not row data |
@@ -261,11 +338,14 @@ The `export` tool response is always ~15 tokens regardless of result size (1 row
 
 **Combining tools efficiently:**
 ```
-schema()                          → understand all table structures
-value_counts(table, column)       → identify key categorical dimensions
-summarize(sql="... SAMPLE 5000")  → statistical profile without full scan
-query(sql="SELECT ...")           → targeted retrieval once you know what you need
-export(sql="SELECT ...")          → bulk delivery without context cost
+schema(compact=true)                        → understand all table structures (token-efficient)
+column_search("work_id")                    → find which tables share a key column
+row_counts()                                → row counts for all tables at once
+value_counts(table, column)                 → identify key categorical dimensions
+summarize(sql="... SAMPLE 5000")            → statistical profile without full scan
+sample_by_id_range(table, start=X, end=Y)  → explore a slice of a large parquet table
+query(sql="SELECT ...")                     → targeted retrieval once you know what you need
+export(sql="SELECT ...")                    → bulk delivery without context cost
 ```
 
 ---
