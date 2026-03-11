@@ -560,8 +560,12 @@ func NewMCPHandler(
 				if end == 0 {
 					end = start
 				}
+				// Wrap the WHERE filter in a subquery before applying USING SAMPLE.
+				// DuckDB's reservoir sampler silently returns 0 rows when USING SAMPLE
+				// is combined with a WHERE clause directly on parquet-backed views;
+				// materialising the filter in a subquery first avoids this.
 				sql = fmt.Sprintf(
-					"SELECT * FROM %s WHERE %s BETWEEN %d AND %d USING SAMPLE %d ROWS (reservoir, 42)",
+					"SELECT * FROM (SELECT * FROM %s WHERE %s BETWEEN %d AND %d) USING SAMPLE %d ROWS (reservoir, 42)",
 					table, idCol, start, end, n,
 				)
 			} else {
