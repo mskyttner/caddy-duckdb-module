@@ -67,7 +67,7 @@ create or replace macro api_swepub_classify(level := '3', title := NULL, abstrac
 );
 
 -- Document macros so MCP tool descriptions are meaningful.
-COMMENT ON MACRO TABLE api_swepub_classify IS 'classify title and/or abstract according to SSIF/FORD research topic taxonomy';
+COMMENT ON MACRO TABLE api_swepub_classify IS 'classify title and/or abstract according to SSIF/FORD research topic taxonomy. params: level (default ''3''), title (VARCHAR), abstract (VARCHAR), keywords (VARCHAR)';
 
 -- Switch default catalog to diva so unqualified table names resolve to diva tables.
 -- Macros created above remain in :memory: and are still callable from any catalog.

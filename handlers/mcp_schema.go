@@ -68,7 +68,7 @@ func buildDynamicSchema(params []string, sqlTypes []string) json.RawMessage {
 	props := make([]schemaProp, 0, len(params))
 	for i, param := range params {
 		sqlType := "VARCHAR"
-		if i < len(sqlTypes) {
+		if i < len(sqlTypes) && sqlTypes[i] != "" {
 			sqlType = sqlTypes[i]
 		}
 		desc := "SQL type: " + sqlType
