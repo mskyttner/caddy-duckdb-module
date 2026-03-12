@@ -68,6 +68,7 @@ docs/
 
 # Local configuration files
 Caddyfile.local
+examples/redeploy.sh
 
 # Swagger UI (downloaded via make swagger-ui or during Docker build)
 swagger-ui-dist/
