@@ -1565,7 +1565,7 @@ func (h *OpenAPIHandler) generateMCPOperation() map[string]interface{} {
 			"`query` (read-only SQL), `execute` (write SQL, requires execute permission), " +
 			"`export` (write results to file, returns URL), `list_tables`, `describe`, `database_info`. " +
 			"Auth is identical to the REST API: pass X-API-Key (or use Basic auth / api_key query param). " +
-			"Compatible with any MCP client that supports the streamable-HTTP transport (e.g. Claude Desktop, mcp-go).",
+			"Compatible with any MCP client that supports the streamable-HTTP transport (e.g. Claude Desktop).",
 		"operationId": "mcpStreamableHTTP",
 		"security": []map[string]interface{}{
 			{"ApiKeyAuth": []string{}},
