@@ -53,6 +53,8 @@ func NewMCPHandler(
 		Version: "1.0.0",
 	}, nil)
 
+	registerDocResources(srv)
+
 	// checkPerm authenticates the API key from the request header and checks
 	// the given operation permission. Returns false and writes an error result
 	// if auth fails. The Caddy middleware already enforced 401; this is defence-in-depth.

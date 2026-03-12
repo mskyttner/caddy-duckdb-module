@@ -63,6 +63,8 @@ CLAUDE.md
 docs/
 !docs/*.md
 !docs/*.txt
+!handlers/docs/
+!handlers/docs/*.md
 
 # Local configuration files
 Caddyfile.local

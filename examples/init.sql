@@ -7,6 +7,11 @@ ATTACH '/data/diva/diva_oai_normalized.db' AS diva (READ_ONLY);
 install http_request from community;
 load http_request;
 
+-- Install and load the textplot community extension for ASCII visualizations.
+-- Provides tp_bar(), tp_sparkline(), textplot_histogram() etc.
+install textplot from community;
+load textplot;
+
 -- Helper macro to sanitize text for JSON in BLOB (removes problematic chars).
 -- Note: Backslashes are removed entirely to avoid BLOB escape sequence issues.
 create or replace macro json_safe_str(txt) as
