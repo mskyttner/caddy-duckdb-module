@@ -102,9 +102,20 @@ RUN curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VER
     unzip -o /tmp/duckdb.zip -d /usr/local/bin/ && \
     rm /tmp/duckdb.zip && \
     chmod +x /usr/local/bin/duckdb
-# Pre-install Lance extension into caddy user's home so it's found at runtime
-RUN HOME=/home/caddy duckdb -c "INSTALL lance FROM community; LOAD lance;" && \
+# Pre-install community extensions into caddy user's home so they're found at runtime.
+# - lance:     vector/FTS index support
+# - textplot:  ASCII chart functions (tp_bar, tp_sparkline, textplot_histogram)
+# - markdown:  read_markdown() for parsing Markdown files into tables
+RUN HOME=/home/caddy duckdb -c " \
+    INSTALL lance    FROM community; LOAD lance; \
+    INSTALL textplot FROM community; LOAD textplot; \
+    INSTALL markdown FROM community; LOAD markdown; \
+    " && \
     chown -R caddy:caddy /home/caddy/.duckdb
+
+# Copy embedded docs to /app/docs so they are accessible to DuckDB at runtime.
+# User init.sql files can use: read_markdown('/app/docs/duckdb-sql.md') etc.
+COPY --chown=caddy:caddy handlers/docs/ /app/docs/
 
 # Expose default port
 EXPOSE 8080
