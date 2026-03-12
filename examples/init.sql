@@ -39,9 +39,9 @@ create or replace macro api_swepub_classify(level := '3', title := NULL, abstrac
         from http_post(
             'https://bibliometri.swepub.kb.se/api/v2/classify/',
             body := ('{"level": "' || coalesce(level::varchar, '3') ||
-                '", "title": "' || json_safe_str(title) ||
-                '", "abstract": "' || json_safe_str(abstract) ||
-                '", "keywords": "' || json_safe_str(keywords) ||
+                '", "title": "' || memory.json_safe_str(title) ||
+                '", "abstract": "' || memory.json_safe_str(abstract) ||
+                '", "keywords": "' || memory.json_safe_str(keywords) ||
                 '"}')::BLOB,
             "content_type" := 'application/json'
         )
@@ -65,6 +65,9 @@ create or replace macro api_swepub_classify(level := '3', title := NULL, abstrac
         eng_label: suggestions."prefLabelByLang".en,
         swe_label: suggestions."prefLabelByLang".sv,
 );
+
+-- Document macros so MCP tool descriptions are meaningful.
+COMMENT ON MACRO TABLE api_swepub_classify IS 'classify title and/or abstract according to SSIF/FORD research topic taxonomy';
 
 -- Switch default catalog to diva so unqualified table names resolve to diva tables.
 -- Macros created above remain in :memory: and are still callable from any catalog.
