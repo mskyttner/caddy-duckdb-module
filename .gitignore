@@ -74,3 +74,4 @@ examples/redeploy.sh
 swagger-ui-dist/
 *.pyc
 __pycache__/
+examples/conversations/

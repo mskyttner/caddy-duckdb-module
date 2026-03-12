@@ -54,6 +54,7 @@ func NewMCPHandler(
 	}, nil)
 
 	registerDocResources(srv)
+	registerHelpTool(srv)
 
 	// checkPerm authenticates the API key from the request header and checks
 	// the given operation permission. Returns false and writes an error result
