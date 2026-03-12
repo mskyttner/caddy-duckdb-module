@@ -88,6 +88,69 @@ Best practices:
 
 ---
 
+## ASCII Text Plots (textplot extension)
+
+The `textplot` community extension renders charts as VARCHAR strings returned inline in query results — no external renderer needed. Output is readable in any terminal, markdown block, or chat interface.
+
+Load once per session (or in init.sql):
+```sql
+INSTALL textplot FROM community;
+LOAD textplot;
+```
+
+### Horizontal Bar Chart (`tp_bar`)
+
+Suitable for: comparing a numeric measure across categories, directly in the result set.
+
+```sql
+SELECT
+    category,
+    count(*) AS n,
+    tp_bar(count(*), min := 0, max := 200, width := 40) AS chart
+FROM my_table
+GROUP BY category
+ORDER BY n DESC
+LIMIT 15;
+```
+
+### Sparkline (`tp_sparkline`)
+
+Suitable for: compact trend overview — fits a time series into a single cell.
+
+```sql
+SELECT
+    category,
+    tp_sparkline(list(monthly_count ORDER BY month)) AS trend
+FROM (
+    SELECT
+        category,
+        date_trunc('month', ts) AS month,
+        count(*) AS monthly_count
+    FROM my_table
+    GROUP BY ALL
+)
+GROUP BY category
+ORDER BY category;
+```
+
+### Histogram (`textplot_histogram`)
+
+Suitable for: distribution of a numeric column — shows shape, skew, and outliers.
+
+```sql
+SELECT textplot_histogram(metric, bins := 10) AS distribution
+FROM my_table
+WHERE metric IS NOT NULL;
+```
+
+Best practices:
+- Output is a VARCHAR column — wrap the query in a CTE if you need it alongside other columns
+- `tp_bar` `min`/`max` should match the actual data range for meaningful bar lengths; use a subquery or window function to derive them dynamically if needed
+- `tp_sparkline` requires a list — aggregate with `list(val ORDER BY time)` before passing
+- Combine `tp_bar` with the raw number for readable output: `category`, `n`, `chart`
+
+---
+
 ## Dashboard Composition
 
 For a comprehensive view, combine chart types:
