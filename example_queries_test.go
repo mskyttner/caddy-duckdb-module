@@ -845,7 +845,7 @@ func mcpCall(t *testing.T, d *DuckDB, id int, method string, params interface{})
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest("POST", "/duckdb/mcp", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	rec := serve(t, d, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("MCP %s: expected 200, got %d: %s", method, rec.Code, rec.Body)
