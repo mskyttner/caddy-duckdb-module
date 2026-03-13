@@ -245,7 +245,7 @@ Available tags:
 - `x.y.z` - Specific version (e.g., `1.0.0`)
 - `sha-<commit>` - Specific commit
 
-Supported platforms: `linux/amd64`
+Supported platforms: `linux/amd64`, `linux/arm64`, `darwin/arm64`, `windows/amd64`
 
 ### Quick Start with Docker
 
@@ -686,6 +686,23 @@ Available MCP tools:
 | `list_tables` | List all non-internal tables |
 | `describe` | Column schema for a table or view |
 | `database_info` | Database statistics and metadata |
+| `schema` | Compact multi-table schema — use `table_pattern` to filter |
+| `row_counts` | Row counts for all (or filtered) tables |
+| `sample` | Reservoir sample from a table — better than LIMIT for exploration |
+| `sample_by_id_range` | Sample rows within an ID range |
+| `column_search` | Find which tables contain a column matching a name pattern |
+| `value_counts` | Top-N distinct values with count, percentage, and cumulative percentage |
+| `summarize` | Per-column statistics (min/max/avg/null%/approx_unique) |
+| `help` | DuckDB documentation browser — no args for TOC, keyword for a section |
+
+MCP resources (read-only reference documents accessible at `duckdb://` URIs):
+
+| Resource | Description |
+|----------|-------------|
+| `duckdb://docs/llms.txt` | Full LLM integration guide |
+| `duckdb://docs/sql-syntax` | DuckDB SQL syntax reference |
+| `duckdb://docs/functions` | DuckDB built-in functions reference |
+| `duckdb://docs/data-types` | DuckDB data types reference |
 
 ```bash
 # Initialize MCP session
@@ -829,6 +846,8 @@ caddy-duckdb-module/
 │   ├── execute.go         # Execute handler (write SQL)
 │   ├── export.go          # Export handler (SQL → file → URL)
 │   ├── mcp.go             # MCP streamable-HTTP endpoint
+│   ├── mcp_args.go        # MCP tool argument parsing helpers
+│   ├── mcp_schema.go      # MCP tool JSON schema definitions
 │   ├── httpserver.go      # httpserver-compatible handler (POST /)
 │   ├── columns.go         # Column schema endpoint
 │   ├── params.go          # Parameter parsing
@@ -836,6 +855,7 @@ caddy-duckdb-module/
 │   └── openapi.go         # OpenAPI 3.0 specification handler
 ├── formats/
 │   ├── json.go            # JSON formatter
+│   ├── sanitize.go        # DuckDB type sanitization (Map, UUID, Decimal → JSON-safe)
 │   ├── csv.go             # CSV formatter
 │   ├── parquet.go         # Apache Parquet formatter
 │   └── arrow.go           # Apache Arrow IPC formatter
@@ -928,4 +948,4 @@ Built with:
 - [Caddy](https://caddyserver.com/)
 - [DuckDB](https://duckdb.org/)
 - [duckdb-go](https://github.com/duckdb/duckdb-go)
-- [mcp-go](https://github.com/mark3labs/mcp-go)
+- [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)
