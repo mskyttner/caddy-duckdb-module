@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strings"
 
-	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tobilg/caddy-duckdb-module/auth"
 	"github.com/tobilg/caddy-duckdb-module/database"
+	"github.com/tobilg/caddy-duckdb-module/formats"
 	"go.uber.org/zap"
 )
 
@@ -671,18 +671,7 @@ func queryRowsRaw(dbMgr *database.Manager, sql string, limit int) (cols []string
 		}
 		row := make(map[string]any, len(cols))
 		for i, col := range cols {
-			switch v := values[i].(type) {
-			case nil:
-				row[col] = nil
-			case []byte:
-				row[col] = string(v)
-			case duckdb.Decimal:
-				// Serialize DECIMAL as a plain float64 so JSON output is a number,
-				// not the raw {Width, Scale, Value} struct from the Go driver.
-				row[col] = v.Float64()
-			default:
-				row[col] = v
-			}
+			row[col] = formats.SanitizeValue(values[i])
 		}
 		data = append(data, row)
 	}

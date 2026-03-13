@@ -73,14 +73,7 @@ func WriteJSONToWriter(w io.Writer, rows *sql.Rows) (int64, error) {
 		}
 		rowMap := make(map[string]interface{}, len(columns))
 		for i, col := range columns {
-			switch v := values[i].(type) {
-			case nil:
-				rowMap[col] = nil
-			case []byte:
-				rowMap[col] = string(v)
-			default:
-				rowMap[col] = v
-			}
+			rowMap[col] = SanitizeValue(values[i])
 		}
 		if rowCount > 0 {
 			fmt.Fprint(w, ",")
@@ -130,17 +123,7 @@ func WriteJSON(w http.ResponseWriter, rows *sql.Rows, page, limit int, totalRows
 		// Create a map for this row
 		rowMap := make(map[string]interface{})
 		for i, col := range columns {
-			val := values[i]
-
-			// Handle NULL values and byte arrays
-			switch v := val.(type) {
-			case nil:
-				rowMap[col] = nil
-			case []byte:
-				rowMap[col] = string(v)
-			default:
-				rowMap[col] = v
-			}
+			rowMap[col] = SanitizeValue(values[i])
 		}
 
 		data = append(data, rowMap)
@@ -239,17 +222,7 @@ func WriteJSONCompact(w http.ResponseWriter, rows *sql.Rows, executionTime time.
 		// Create array for this row
 		rowArray := make([]interface{}, len(columns))
 		for i := range columns {
-			val := values[i]
-
-			// Handle NULL values and byte arrays
-			switch v := val.(type) {
-			case nil:
-				rowArray[i] = nil
-			case []byte:
-				rowArray[i] = string(v)
-			default:
-				rowArray[i] = v
-			}
+			rowArray[i] = SanitizeValue(values[i])
 		}
 
 		data = append(data, rowArray)
@@ -322,17 +295,7 @@ func WriteJSONWithMeta(w http.ResponseWriter, rows *sql.Rows, executionTime time
 		// Create a map for this row
 		rowMap := make(map[string]interface{})
 		for i, col := range columns {
-			val := values[i]
-
-			// Handle NULL values and byte arrays
-			switch v := val.(type) {
-			case nil:
-				rowMap[col] = nil
-			case []byte:
-				rowMap[col] = string(v)
-			default:
-				rowMap[col] = v
-			}
+			rowMap[col] = SanitizeValue(values[i])
 		}
 
 		data = append(data, rowMap)
@@ -415,17 +378,7 @@ func WriteJSONWithCursor(w http.ResponseWriter, rows *sql.Rows, limit int, sortC
 		// Create a map for this row
 		rowMap := make(map[string]interface{})
 		for i, col := range columns {
-			val := values[i]
-
-			// Handle NULL values and byte arrays
-			switch v := val.(type) {
-			case nil:
-				rowMap[col] = nil
-			case []byte:
-				rowMap[col] = string(v)
-			default:
-				rowMap[col] = v
-			}
+			rowMap[col] = SanitizeValue(values[i])
 		}
 
 		// Only add to data if within limit
