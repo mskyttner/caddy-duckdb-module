@@ -79,6 +79,8 @@ func NewMCPHandler(
 				"Execute a read-only SQL query (SELECT, WITH, FROM, SHOW, DESCRIBE, EXPLAIN). "+
 					"Results are capped at max_rows (default %d) to protect context window size. "+
 					"Use the export tool for large result sets. "+
+					"For DuckDB-specific syntax (FROM-first, GROUP BY ALL, lambdas, PIVOT, etc.) "+
+					"call the help tool or fetch the duckdb://docs/sql-syntax resource before writing complex queries. "+
 					"For multi-table joins on large parquet-backed databases: "+
 					"(1) use CTEs to narrow down the key IDs from the most selective filter first, "+
 					"(2) never use SELECT * — project only the columns you need, "+
@@ -419,7 +421,11 @@ func NewMCPHandler(
 				limitVal = 20
 			}
 			sql := fmt.Sprintf(
-				"SELECT %s AS value, COUNT(*) AS n FROM %s GROUP BY 1 ORDER BY 2 DESC LIMIT %d",
+				"WITH counts AS (SELECT %s AS value, COUNT(*) AS n FROM %s GROUP BY 1) "+
+					"SELECT value, n, "+
+					"round(100.0 * n / sum(n) OVER (), 2) AS pct, "+
+					"round(100.0 * sum(n) OVER (ORDER BY n DESC) / sum(n) OVER (), 2) AS cumulative_pct "+
+					"FROM counts ORDER BY n DESC LIMIT %d",
 				column, table, limitVal,
 			)
 			return runQueryTool(dbMgr, sql, limitVal)
@@ -810,11 +816,12 @@ func registerMacroTool(srv *mcp.Server, dbMgr *database.Manager, authorizer *aut
 		return
 	}
 
-	// Build qualified call target: catalog.function_name
-	// database_name is always set by duckdb_functions() (e.g. "memory", "diva").
+	// Build qualified call target: "catalog".function_name
+	// Always quote the database name so names containing dashes or other
+	// special characters (e.g. "walden-thin-26q1") are valid SQL identifiers.
 	qualifiedName := m.Name
 	if m.DatabaseName != "" {
-		qualifiedName = m.DatabaseName + "." + m.Name
+		qualifiedName = `"` + m.DatabaseName + `".` + m.Name
 	}
 
 	macro := m                  // capture for closure

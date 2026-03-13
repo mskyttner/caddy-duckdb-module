@@ -48,7 +48,8 @@ Content-Type: application/json
 | `describe` | query | Column names and types for a table or view |
 | `schema` | query | Tables + column names/types — filter with `table_pattern`, compact dict with `compact=true` |
 | `summarize` | query | Per-column stats (min/max/avg/null%/approx_unique) via DuckDB SUMMARIZE |
-| `value_counts` | query | Top-N distinct values + counts for a column — fast categorical profiling |
+| `value_counts` | query | Top-N distinct values with count, relative frequency (%), and cumulative frequency — fast categorical profiling |
+| `help` | query | DuckDB documentation browser — call with no args for TOC, or a topic keyword for section content |
 | `sample` | query | Unbiased reservoir sample of rows — better than LIMIT for exploration |
 | `column_search` | query | Find which tables contain a column matching a name/LIKE pattern |
 | `row_counts` | query | Row count for one table or all tables (fast on parquet-backed views) |
@@ -56,6 +57,40 @@ Content-Type: application/json
 | `query` | query | Read-only SQL — result capped at `max_rows` (default 200) |
 | `export` | query | Run SQL, write to file, return URL — **use for large result sets** |
 | `execute` | execute | Write SQL: INSERT, UPDATE, DELETE, CREATE TABLE AS SELECT, etc. |
+
+### MCP Resources
+
+The server exposes two Markdown reference documents as MCP resources. Fetch these with `resources/read` before writing complex queries — they document DuckDB-specific syntax that differs significantly from standard SQL.
+
+> **Note:** Most MCP clients (including Claude Code) do not auto-fetch resources. You must request them explicitly using `resources/read`.
+
+| URI | Content |
+|-----|---------|
+| `duckdb://docs/sql-syntax` | FROM-first syntax, GROUP BY ALL, SELECT * EXCLUDE/REPLACE, COLUMNS(), PIVOT/UNPIVOT, ASOF/LATERAL joins, lambda functions, list/struct literals, function chaining, direct file queries |
+| `duckdb://docs/visualization` | SQL templates for time series, bar charts, scatter plots, heatmaps, and ASCII text plots via the `textplot` extension |
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"resources/read",
+ "params":{"uri":"duckdb://docs/sql-syntax"}}
+```
+
+### Tool: `help` — DuckDB documentation browser
+
+A built-in alternative to the resources above. Call with no arguments for a table of contents; call with a section ID or keyword to retrieve that section's content.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+  "name": "help", "arguments": {}
+}}
+```
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+  "name": "help", "arguments": {"topic": "group-by-all"}
+}}
+```
+
+Response: Markdown content for the requested section, or a table of contents with section IDs.
 
 ### Tool: `query`
 
@@ -249,7 +284,7 @@ Counts distinct values in a column, sorted by frequency. Use this to understand 
 }}
 ```
 
-Response: `{rows: [{value: "eng", n: 170570}, {value: "swe", n: 17534}, ...], count: 10}`
+Response: `{rows: [{value: "eng", n: 170570, pct: 69.8, cumulative_pct: 69.8}, {value: "swe", n: 17534, pct: 7.1, cumulative_pct: 76.9}, ...], count: 10}`
 
 ### Tool: `sample` — unbiased row preview
 
@@ -317,6 +352,7 @@ curl -X POST -H "X-API-Key: KEY" \
 
 | Situation | Recommended approach | Why |
 |-----------|---------------------|-----|
+| Before writing complex DuckDB SQL | `help("group-by-all")` or fetch `duckdb://docs/sql-syntax` | DuckDB syntax differs from standard SQL — fetch once, write correctly |
 | First look at a new database | `schema(compact=true)` | Compact dict — ~70% fewer tokens than flat rows |
 | Only a few specific tables | `schema(table_pattern='prefix%', compact=true)` | Filter + compact — minimal tokens |
 | Understanding one table's columns | `describe` | Metadata only, no data scanned |
