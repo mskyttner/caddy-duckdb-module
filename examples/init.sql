@@ -419,4 +419,61 @@ create or replace macro api_get_works_bulk(work_ids) as table (
 
 -- Switch default catalog to diva so unqualified table names resolve to diva tables.
 -- Macros created above remain in :memory: and are still callable from any catalog.
+-- ---------------------------------------------------------------------------
+-- Link generation macros (scalar) — convert identifiers to canonical URLs.
+-- These appear as named MCP tools so LLMs can discover and call them directly,
+-- or use them inside SQL queries: SELECT doi_url(doi) FROM works_ids LIMIT 5
+-- Must be created before USE diva (macros live in :memory: catalog).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE MACRO doi_url(doi)
+    AS 'https://doi.org/' || doi;
+
+CREATE OR REPLACE MACRO orcid_url(orcid)
+    AS 'https://orcid.org/' || orcid;
+
+CREATE OR REPLACE MACRO ror_url(ror)
+    AS 'https://ror.org/' || ror;
+
+CREATE OR REPLACE MACRO pmid_url(pmid)
+    AS 'https://pubmed.ncbi.nlm.nih.gov/' || pmid::VARCHAR;
+
+-- OpenAlex snapshot uses integer IDs (not full URIs like the API).
+CREATE OR REPLACE MACRO openalex_work_url(work_id)
+    AS 'https://openalex.org/W' || work_id::VARCHAR;
+
+CREATE OR REPLACE MACRO openalex_author_url(author_id)
+    AS 'https://openalex.org/A' || author_id::VARCHAR;
+
+CREATE OR REPLACE MACRO openalex_institution_url(institution_id)
+    AS 'https://openalex.org/I' || institution_id::VARCHAR;
+
+CREATE OR REPLACE MACRO openalex_source_url(source_id)
+    AS 'https://openalex.org/S' || source_id::VARCHAR;
+
+-- COMMENT ON MACRO (no TABLE keyword) — for scalar macros.
+-- This is the correct syntax; table macros use COMMENT ON MACRO TABLE.
+COMMENT ON MACRO ror_url IS 'Return the canonical ROR directory URL for a ROR identifier (e.g. "03yrm5c26")';
+
+-- ---------------------------------------------------------------------------
+-- Macro metadata table — provides descriptions and parameter type overrides
+-- for MCP tool discovery. Lives in :memory: so it works even with read-only
+-- attached databases. param_types is a JSON object mapping param name to
+-- SQL type (e.g. '{"work_id": "BIGINT"}').
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE TABLE memory.macro_descriptions (
+    macro_name  VARCHAR PRIMARY KEY,
+    description VARCHAR,
+    param_types JSON
+);
+
+INSERT OR REPLACE INTO memory.macro_descriptions VALUES
+    ('doi_url',                    'Return the canonical DOI URL for a DOI string (e.g. "10.1038/s41586-021-03380-y")', '{}'),
+    ('orcid_url',                  'Return the canonical ORCID profile URL for an ORCID iD', '{}'),
+    ('ror_url',                    'Return the canonical ROR URL for a ROR identifier', '{}'),
+    ('pmid_url',                   'Return the PubMed URL for a PubMed ID (integer)', '{"pmid": "BIGINT"}'),
+    ('openalex_work_url',          'Return the OpenAlex URL for a work integer ID (e.g. 2741809807)', '{"work_id": "BIGINT"}'),
+    ('openalex_author_url',        'Return the OpenAlex URL for an author integer ID', '{"author_id": "BIGINT"}'),
+    ('openalex_institution_url',   'Return the OpenAlex URL for an institution integer ID', '{"institution_id": "BIGINT"}'),
+    ('openalex_source_url',        'Return the OpenAlex URL for a source integer ID', '{"source_id": "BIGINT"}');
+
 USE diva;

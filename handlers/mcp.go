@@ -619,10 +619,14 @@ func NewMCPHandler(
 		},
 	)
 
-	// --- user-defined table macros ---
-	if macros, err := discoverTableMacros(dbMgr); err == nil {
+	// --- user-defined macros (table and scalar) ---
+	if macros, err := discoverMacros(dbMgr); err == nil {
 		for _, m := range macros {
-			registerMacroTool(srv, dbMgr, authorizer, maxRows, m)
+			if m.IsScalar {
+				registerScalarMacroTool(srv, dbMgr, authorizer, m)
+			} else {
+				registerMacroTool(srv, dbMgr, authorizer, maxRows, m)
+			}
 		}
 	}
 
@@ -728,26 +732,61 @@ type macroInfo struct {
 	Params       []string // parameter names in order
 	ParamTypes   []string // SQL type for each parameter
 	Definition   string   // truncated SQL body (for tool description fallback)
-	Comment      string   // from COMMENT ON MACRO TABLE … IS '…'
+	Comment      string   // from COMMENT ON MACRO TABLE/MACRO … IS '…'
+	IsScalar     bool     // true for scalar macros, false for table macros
 }
 
-// discoverTableMacros queries duckdb_functions() for user-defined table macros.
-// It uses to_json() to convert the VARCHAR[] parameter columns to JSON strings
-// that are safe to unmarshal regardless of how the DuckDB Go driver serialises arrays.
-// discoverTableMacros queries duckdb_functions() for user-defined table macros across
-// all attached databases. It uses to_json() to convert VARCHAR[] columns to JSON strings
-// that are safe to unmarshal regardless of how the DuckDB Go driver serialises arrays.
-// database_name is captured so calls can be fully qualified (e.g. diva.work_openalex).
-func discoverTableMacros(dbMgr *database.Manager) ([]macroInfo, error) {
+// macroMetadata holds optional overrides from memory.macro_descriptions.
+type macroMetadata struct {
+	Description string
+	ParamTypes  map[string]string // param name → SQL type override
+}
+
+// loadMacroMetadata tries to read memory.macro_descriptions for type and description
+// overrides. Returns an empty map silently if the table does not exist.
+func loadMacroMetadata(dbMgr *database.Manager) map[string]macroMetadata {
+	result := make(map[string]macroMetadata)
+	_, rows, _, err := queryRowsRaw(dbMgr, `
+		SELECT macro_name,
+		       description,
+		       param_types::varchar AS param_types_json
+		FROM memory.macro_descriptions
+		WHERE macro_name IS NOT NULL
+	`, 10000)
+	if err != nil {
+		return result // table absent — silently ignore
+	}
+	for _, row := range rows {
+		name, _ := row["macro_name"].(string)
+		if name == "" {
+			continue
+		}
+		meta := macroMetadata{}
+		meta.Description, _ = row["description"].(string)
+		if pt, _ := row["param_types_json"].(string); pt != "" && pt != "null" {
+			_ = json.Unmarshal([]byte(pt), &meta.ParamTypes)
+		}
+		result[name] = meta
+	}
+	return result
+}
+
+// discoverMacros queries duckdb_functions() for all user-defined table and scalar macros
+// across all attached databases. It merges results with any overrides in
+// memory.macro_descriptions (description and per-parameter type overrides).
+func discoverMacros(dbMgr *database.Manager) ([]macroInfo, error) {
+	metadata := loadMacroMetadata(dbMgr)
+
 	sql := `
 		SELECT function_name,
 		       database_name,
-		       to_json(parameters)::varchar     AS params_json,
-		       to_json(parameter_types)::varchar AS types_json,
+		       to_json(parameters)::varchar      AS params_json,
+		       to_json(parameter_types)::varchar  AS types_json,
 		       macro_definition,
-		       comment
+		       comment,
+		       function_type
 		FROM duckdb_functions()
-		WHERE function_type = 'table_macro'
+		WHERE function_type IN ('table_macro', 'macro')
 		  AND database_name NOT IN ('system', 'temp')
 		ORDER BY database_name, function_name
 	`
@@ -762,6 +801,8 @@ func discoverTableMacros(dbMgr *database.Manager) ([]macroInfo, error) {
 			continue
 		}
 		dbName, _ := row["database_name"].(string)
+		funcType, _ := row["function_type"].(string)
+
 		var params, types []string
 		if v, _ := row["params_json"].(string); v != "" && v != "null" {
 			_ = json.Unmarshal([]byte(v), &params)
@@ -769,11 +810,30 @@ func discoverTableMacros(dbMgr *database.Manager) ([]macroInfo, error) {
 		if v, _ := row["types_json"].(string); v != "" && v != "null" {
 			_ = json.Unmarshal([]byte(v), &types)
 		}
+
+		comment, _ := row["comment"].(string)
+
+		// Apply metadata overrides (description and per-param type overrides).
+		if meta, ok := metadata[name]; ok {
+			if meta.Description != "" {
+				comment = meta.Description
+			}
+			if len(meta.ParamTypes) > 0 {
+				if len(types) < len(params) {
+					types = make([]string, len(params))
+				}
+				for i, p := range params {
+					if t, ok := meta.ParamTypes[p]; ok {
+						types[i] = t
+					}
+				}
+			}
+		}
+
 		def, _ := row["macro_definition"].(string)
 		if len(def) > 300 {
 			def = def[:300] + "…"
 		}
-		comment, _ := row["comment"].(string)
 		macros = append(macros, macroInfo{
 			Name:         name,
 			DatabaseName: dbName,
@@ -781,18 +841,51 @@ func discoverTableMacros(dbMgr *database.Manager) ([]macroInfo, error) {
 			ParamTypes:   types,
 			Definition:   def,
 			Comment:      comment,
+			IsScalar:     funcType == "macro",
 		})
 	}
 	return macros, nil
 }
 
 // macroDescription returns the MCP tool description for a macro.
-// If a COMMENT ON MACRO TABLE … was set, that takes precedence over the SQL body.
+// A COMMENT on the macro takes precedence over the SQL body fallback.
 func macroDescription(m macroInfo) string {
 	if m.Comment != "" {
 		return m.Comment
 	}
+	if m.IsScalar {
+		return "User-defined scalar macro. SQL: " + m.Definition
+	}
 	return "User-defined table macro. SQL: " + m.Definition
+}
+
+// buildMacroArgs converts the provided MCP tool arguments into a slice of
+// DuckDB named-argument strings (e.g. ["param := 42", "name := 'foo'"]).
+// Only parameters listed in macro.Params that are present in the request are included.
+func buildMacroArgs(macro macroInfo, req *mcp.CallToolRequest) []string {
+	provided := argMap(req)
+	var args []string
+	for _, param := range macro.Params {
+		rawVal, ok := provided[param]
+		if !ok {
+			continue
+		}
+		switch v := rawVal.(type) {
+		case float64:
+			if v == float64(int64(v)) {
+				args = append(args, fmt.Sprintf("%s := %d", param, int64(v)))
+			} else {
+				args = append(args, fmt.Sprintf("%s := %g", param, v))
+			}
+		case bool:
+			args = append(args, fmt.Sprintf("%s := %t", param, v))
+		default:
+			s := argString(req, param, "")
+			safe := strings.ReplaceAll(s, "'", "''")
+			args = append(args, fmt.Sprintf("%s := '%s'", param, safe))
+		}
+	}
+	return args
 }
 
 // registerMacroTool adds a user-defined table macro as an MCP tool.
@@ -830,31 +923,59 @@ func registerMacroTool(srv *mcp.Server, dbMgr *database.Manager, authorizer *aut
 			if ok, _ := authorizer.CheckPermission(roleName, "*", auth.OperationQuery); !ok {
 				return textResult("Error: insufficient query permission"), nil
 			}
-
-			provided := argMap(req)
-			var args []string
-			for _, param := range macro.Params {
-				rawVal, ok := provided[param]
-				if !ok {
-					continue
-				}
-				switch v := rawVal.(type) {
-				case float64:
-					if v == float64(int64(v)) {
-						args = append(args, fmt.Sprintf("%s := %d", param, int64(v)))
-					} else {
-						args = append(args, fmt.Sprintf("%s := %g", param, v))
-					}
-				case bool:
-					args = append(args, fmt.Sprintf("%s := %t", param, v))
-				default:
-					s := argString(req, param, "")
-					safe := strings.ReplaceAll(s, "'", "''")
-					args = append(args, fmt.Sprintf("%s := '%s'", param, safe))
-				}
-			}
+			args := buildMacroArgs(macro, req)
 			sql := fmt.Sprintf("SELECT * FROM %s(%s)", callTarget, strings.Join(args, ", "))
 			return runQueryTool(dbMgr, sql, maxRows)
+		},
+	)
+}
+
+// registerScalarMacroTool adds a user-defined scalar macro as an MCP tool.
+// The macro is invoked as SELECT macro(args) AS result and the single value
+// is returned as text content.
+func registerScalarMacroTool(srv *mcp.Server, dbMgr *database.Manager, authorizer *auth.Authorizer, m macroInfo) {
+	if builtinMCPToolNames[m.Name] {
+		return
+	}
+
+	qualifiedName := m.Name
+	if m.DatabaseName != "" {
+		qualifiedName = `"` + m.DatabaseName + `".` + m.Name
+	}
+
+	macro := m
+	callTarget := qualifiedName
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        macro.Name,
+			Description: macroDescription(macro),
+			InputSchema: buildDynamicSchema(macro.Params, macro.ParamTypes),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			apiKey, _ := authorizer.AuthenticateAPIKey(apiKeyFromRequest(req))
+			var roleName string
+			if apiKey != nil {
+				roleName = apiKey.RoleName
+			}
+			if ok, _ := authorizer.CheckPermission(roleName, "*", auth.OperationQuery); !ok {
+				return textResult("Error: insufficient query permission"), nil
+			}
+			args := buildMacroArgs(macro, req)
+			sql := fmt.Sprintf("SELECT %s(%s) AS result", callTarget, strings.Join(args, ", "))
+			_, rows, _, err := queryRowsRaw(dbMgr, sql, 1)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			if len(rows) == 0 {
+				return textResult(""), nil
+			}
+			for _, v := range rows[0] {
+				if v == nil {
+					return textResult(""), nil
+				}
+				return textResult(fmt.Sprintf("%v", v)), nil
+			}
+			return textResult(""), nil
 		},
 	)
 }
