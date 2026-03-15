@@ -15,6 +15,11 @@
 #
 # MCP endpoint: http://localhost:8099/duckdb/mcp
 #   Use X-API-Key: <your-key> header for authentication.
+#
+# MCP docs: any *.md file in examples/docs/ is served as an MCP resource at
+#   duckdb://docs/<stem>  (e.g. suhf-bibliometrics.md → duckdb://docs/suhf-bibliometrics)
+# Add or edit files in examples/docs/ to provide deployment-specific guidance
+# to LLMs without restarting the container (changes take effect on next startup).
 
 services:
   diva-mcp:
@@ -31,6 +36,9 @@ services:
       - ../../harvest-tools/diva/diva_oai_normalized.db:/data/diva/diva_oai_normalized.db:ro
       # auth.db directory (must be pre-initialized; see setup above)
       - ./diva-data:/data/auth
+      # MCP docs — deployment-specific *.md files served as MCP resources.
+      # Edit files in examples/docs/ and restart to update LLM guidance.
+      - ./docs:/data/docs:ro
     environment:
       - TZ=UTC
       # Use an in-memory main DB; all data comes from the attached diva DB
@@ -44,6 +52,7 @@ services:
       - DUCKDB_MAX_ROWS_PER_PAGE=100
       - DUCKDB_ABSOLUTE_MAX_ROWS=5000
       - DUCKDB_MAX_MCP_ROWS=200
+      - DUCKDB_MCP_DOCS_DIR=/data/docs
       - DUCKDB_CORS_ORIGINS=*
     restart: unless-stopped
     healthcheck:

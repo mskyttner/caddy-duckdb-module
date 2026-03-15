@@ -37,12 +37,17 @@ type MCPHandler struct {
 }
 
 // NewMCPHandler creates the MCP handler and registers all tools.
+// docsDir, if non-empty, is scanned for *.md files that are registered as
+// additional MCP resources at duckdb://docs/<stem>. This allows operators to
+// provide deployment-specific documentation (schema guides, domain references)
+// without recompiling the binary.
 func NewMCPHandler(
 	dbMgr *database.Manager,
 	authorizer *auth.Authorizer,
 	exportHandler *ExportHandler,
 	logger *zap.Logger,
 	maxRows int,
+	docsDir string,
 ) *MCPHandler {
 	if maxRows <= 0 {
 		maxRows = 500
@@ -53,7 +58,7 @@ func NewMCPHandler(
 		Version: "1.0.0",
 	}, nil)
 
-	registerDocResources(srv)
+	registerDocResources(srv, docsDir)
 	registerHelpTool(srv)
 
 	// checkPerm authenticates the API key from the request header and checks

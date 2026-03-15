@@ -128,14 +128,3 @@ WHERE source_is_core = true
 
 This corresponds to the "bibliometric universe" used by most national and international
 evaluations, excluding conference papers, book chapters, and grey literature.
-
----
-
-## Key signals for LLM query planning
-
-- `spill_to_disk_bytes > 0` in `server_status` → previous query overflowed RAM; simplify next query
-- `n < 50` in result → add explicit caution note in your response
-- User asks for `AVG(cited_by_count)` → suggest `MEDIAN` or top-percentile share instead
-- User asks to compare fwci across fields → remind them fwci is already field-normalised, but
-  cross-field fwci comparisons are still discouraged for formal evaluation purposes
-- User mentions JIF or h-index for cross-field ranking → apply Rec 9 and suggest alternatives

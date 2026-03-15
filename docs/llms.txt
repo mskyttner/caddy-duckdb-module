@@ -27,7 +27,33 @@ Three equivalent methods — use any one:
 
 The `/duckdb/mcp` endpoint implements the [Model Context Protocol](https://modelcontextprotocol.io) using the streamable-HTTP transport. It is the most ergonomic interface for LLMs: tools are self-describing and the export tool avoids flooding context windows with row data.
 
-### Connect
+### Client configuration
+
+To connect from **Claude Code** or any MCP client that reads `~/.claude/mcp.json` /
+`claude_desktop_config.json`, add this server entry (replace host and key):
+
+```json
+{
+  "mcpServers": {
+    "caddy-duckdb": {
+      "type": "http",
+      "url": "https://<host>/duckdb/mcp",
+      "headers": {
+        "X-API-Key": "YOUR_KEY"
+      }
+    }
+  }
+}
+```
+
+For **Claude Code** specifically, you can also add it from the command line:
+
+```bash
+claude mcp add --transport http caddy-duckdb https://<host>/duckdb/mcp \
+  --header "X-API-Key: YOUR_KEY"
+```
+
+### Raw JSON-RPC handshake
 
 ```json
 POST /duckdb/mcp
@@ -60,14 +86,22 @@ Content-Type: application/json
 
 ### MCP Resources
 
-The server exposes two Markdown reference documents as MCP resources. Fetch these with `resources/read` before writing complex queries — they document DuckDB-specific syntax that differs significantly from standard SQL.
+The server exposes Markdown reference documents as MCP resources. Fetch these with `resources/read` before writing complex queries.
 
-> **Note:** Most MCP clients (including Claude Code) do not auto-fetch resources. You must request them explicitly using `resources/read`.
+> **Note:** Most MCP clients (including Claude Code) do not auto-fetch resources. You must request them explicitly using `resources/read` or `resources/list` to discover what is available.
+
+Two resources are always available (built into the binary):
 
 | URI | Content |
 |-----|---------|
 | `duckdb://docs/sql-syntax` | FROM-first syntax, GROUP BY ALL, SELECT * EXCLUDE/REPLACE, COLUMNS(), PIVOT/UNPIVOT, ASOF/LATERAL joins, lambda functions, list/struct literals, function chaining, direct file queries |
 | `duckdb://docs/visualization` | SQL templates for time series, bar charts, scatter plots, heatmaps, and ASCII text plots via the `textplot` extension |
+
+Operators may also mount a docs directory (`DUCKDB_MCP_DOCS_DIR`) containing deployment-specific `*.md` files. Each file is served as `duckdb://docs/<stem>` and appears in `resources/list`. Use `resources/list` to discover what this deployment provides:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}
+```
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"resources/read",
