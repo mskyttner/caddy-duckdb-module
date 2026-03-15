@@ -63,7 +63,7 @@ func NewManager(cfg Config) (*Manager, error) {
 	//   1. Open :memory: as the main (writable) database.
 	//   2. ATTACH the file as read-only.
 	//   3. Execute the init SQL — macros land in the memory catalog.
-	//   4. Use NewConnector with a connInitFn that runs SET default_catalog on
+	//   4. Use NewConnector with a connInitFn that runs USE <catalog> on
 	//      every new pool connection, so all queries transparently target the
 	//      attached file catalog.
 	//
@@ -635,7 +635,7 @@ func openDirectDB(cfg Config) (*sql.DB, error) {
 //     file can also ATTACH other databases and USE them.
 //  3. ATTACH the target file read-only (if not already attached by init SQL).
 //  4. Return a *sql.DB backed by a duckdb.Connector whose connInitFn runs
-//     SET default_catalog on every new pool connection.
+//     USE <catalog> on every new pool connection.
 //
 // This allows CREATE MACRO, CREATE TABLE ... AS, etc. in init SQL even when
 // the target data file is mounted read-only.
@@ -668,9 +668,9 @@ func (m *Manager) openWithMemoryBootstrap(cfg Config) (*sql.DB, error) {
 			return fmt.Errorf("failed to attach %s: %w", cfg.MainDBPath, err)
 		}
 		if _, err := execer.ExecContext(ctx,
-			fmt.Sprintf("SET default_catalog = %s", quoteIdent(stem)), nil,
+			fmt.Sprintf("USE %s", quoteIdent(stem)), nil,
 		); err != nil {
-			return fmt.Errorf("failed to set default_catalog to %s: %w", stem, err)
+			return fmt.Errorf("failed to USE catalog %s: %w", stem, err)
 		}
 		return nil
 	}
