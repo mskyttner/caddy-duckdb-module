@@ -3,13 +3,23 @@ package database
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
+	duckdb "github.com/duckdb/duckdb-go/v2"
 	"go.uber.org/zap"
 )
+
+// quoteIdent wraps a DuckDB identifier in double-quotes, escaping any
+// embedded double-quotes by doubling them. Required for catalog/schema
+// names that contain hyphens or other non-identifier characters.
+func quoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
 
 // Config holds the configuration for the database manager.
 type Config struct {
@@ -44,39 +54,36 @@ func NewManager(cfg Config) (*Manager, error) {
 		authDBPath:   cfg.AuthDBPath,
 	}
 
-	// Initialize main database
-	mainDSN := cfg.MainDBPath
-	if mainDSN == "" {
-		// In-memory database
-		mainDSN = ":memory:"
-	}
-	// Add configuration parameters
-	mainDSN = fmt.Sprintf("%s?threads=%d&access_mode=%s", mainDSN, cfg.Threads, cfg.AccessMode)
-
-	// Add optional memory limit
-	if cfg.MemoryLimit != "" {
-		mainDSN = fmt.Sprintf("%s&memory_limit=%s", mainDSN, cfg.MemoryLimit)
-	}
-
-	// Add optional object cache
-	if cfg.EnableObjectCache {
-		mainDSN = fmt.Sprintf("%s&enable_object_cache=true", mainDSN)
-	}
-
-	// Add optional temp directory
-	if cfg.TempDirectory != "" {
-		mainDSN = fmt.Sprintf("%s&temp_directory=%s", mainDSN, cfg.TempDirectory)
-	}
-
+	// Initialize main database.
+	//
+	// When access_mode=read_only and a file path + init SQL are both configured,
+	// we use the "memory-bootstrap" strategy so that CREATE MACRO and ATTACH
+	// ':memory:' in the init file work despite the target DB being read-only:
+	//
+	//   1. Open :memory: as the main (writable) database.
+	//   2. ATTACH the file as read-only.
+	//   3. Execute the init SQL — macros land in the memory catalog.
+	//   4. Use NewConnector with a connInitFn that runs SET default_catalog on
+	//      every new pool connection, so all queries transparently target the
+	//      attached file catalog.
+	//
+	// When access_mode=read_write (or no file path, or no init SQL), the
+	// original direct-open path is used unchanged.
 	var err error
-	mgr.mainDB, err = sql.Open("duckdb", mainDSN)
+	useMemoryBootstrap := cfg.AccessMode == "read_only" &&
+		cfg.MainDBPath != "" &&
+		cfg.InitFilePath != ""
+
+	if useMemoryBootstrap {
+		mgr.mainDB, err = mgr.openWithMemoryBootstrap(cfg)
+	} else {
+		mgr.mainDB, err = openDirectDB(cfg)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to open main database: %w", err)
+		return nil, err
 	}
 
-	// Configure connection pool for concurrent operations
-	// DuckDB supports concurrent reads/writes within a single process
-	// Set max connections to threads * 2 to handle concurrent workloads
+	// Configure connection pool
 	mgr.mainDB.SetMaxOpenConns(cfg.Threads * 2)
 	mgr.mainDB.SetMaxIdleConns(cfg.Threads)
 	mgr.mainDB.SetConnMaxLifetime(time.Hour)
@@ -88,14 +95,15 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 
 	mgr.logger.Info("Main database connected",
-		zap.String("dsn", mainDSN),
 		zap.Bool("in_memory", cfg.MainDBPath == ""),
+		zap.Bool("memory_bootstrap", useMemoryBootstrap),
 		zap.Int("max_open_conns", cfg.Threads*2),
 		zap.Int("max_idle_conns", cfg.Threads),
 	)
 
-	// Execute init file if specified
-	if cfg.InitFilePath != "" {
+	// Execute init file for the standard (non-bootstrap) path.
+	// The bootstrap path runs the init file inside openWithMemoryBootstrap.
+	if cfg.InitFilePath != "" && !useMemoryBootstrap {
 		if err := mgr.loadInitFile(cfg.InitFilePath); err != nil {
 			mgr.mainDB.Close()
 			return nil, fmt.Errorf("failed to execute init file: %w", err)
@@ -594,6 +602,101 @@ func (m *Manager) getTableColumns(table string) ([]string, error) {
 	)
 
 	return columns, nil
+}
+
+// openDirectDB opens the main DuckDB database using the standard sql.Open path.
+// Used when access_mode=read_write, or when no init file is configured.
+func openDirectDB(cfg Config) (*sql.DB, error) {
+	dsn := cfg.MainDBPath
+	if dsn == "" {
+		dsn = ":memory:"
+	}
+	dsn = fmt.Sprintf("%s?threads=%d&access_mode=%s", dsn, cfg.Threads, cfg.AccessMode)
+	if cfg.MemoryLimit != "" {
+		dsn = fmt.Sprintf("%s&memory_limit=%s", dsn, cfg.MemoryLimit)
+	}
+	if cfg.EnableObjectCache {
+		dsn = fmt.Sprintf("%s&enable_object_cache=true", dsn)
+	}
+	if cfg.TempDirectory != "" {
+		dsn = fmt.Sprintf("%s&temp_directory=%s", dsn, cfg.TempDirectory)
+	}
+	db, err := sql.Open("duckdb", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open main database: %w", err)
+	}
+	return db, nil
+}
+
+// openWithMemoryBootstrap implements the read-only + init SQL strategy:
+//
+//  1. Open :memory: as the writable main database.
+//  2. Run the init SQL file — macros land in the memory catalog; the init
+//     file can also ATTACH other databases and USE them.
+//  3. ATTACH the target file read-only (if not already attached by init SQL).
+//  4. Return a *sql.DB backed by a duckdb.Connector whose connInitFn runs
+//     SET default_catalog on every new pool connection.
+//
+// This allows CREATE MACRO, CREATE TABLE ... AS, etc. in init SQL even when
+// the target data file is mounted read-only.
+func (m *Manager) openWithMemoryBootstrap(cfg Config) (*sql.DB, error) {
+	// Derive the DuckDB catalog name from the file stem (e.g. "walden-thin-26q1").
+	stem := strings.TrimSuffix(filepath.Base(cfg.MainDBPath), filepath.Ext(cfg.MainDBPath))
+
+	// Build the :memory: DSN (no access_mode — defaults to read_write).
+	memDSN := fmt.Sprintf(":memory:?threads=%d", cfg.Threads)
+	if cfg.MemoryLimit != "" {
+		memDSN = fmt.Sprintf("%s&memory_limit=%s", memDSN, cfg.MemoryLimit)
+	}
+	if cfg.EnableObjectCache {
+		memDSN = fmt.Sprintf("%s&enable_object_cache=true", memDSN)
+	}
+	if cfg.TempDirectory != "" {
+		memDSN = fmt.Sprintf("%s&temp_directory=%s", memDSN, cfg.TempDirectory)
+	}
+
+	// connInitFn runs on every new pool connection: attach the file and set
+	// the default catalog so that unqualified table references hit the file.
+	connInitFn := func(execer driver.ExecerContext) error {
+		ctx := context.Background()
+		attachSQL := fmt.Sprintf(
+			"ATTACH '%s' AS %s (READ_ONLY)",
+			strings.ReplaceAll(cfg.MainDBPath, "'", "''"), // escape single quotes in path
+			quoteIdent(stem),
+		)
+		if _, err := execer.ExecContext(ctx, attachSQL, nil); err != nil {
+			return fmt.Errorf("failed to attach %s: %w", cfg.MainDBPath, err)
+		}
+		if _, err := execer.ExecContext(ctx,
+			fmt.Sprintf("SET default_catalog = %s", quoteIdent(stem)), nil,
+		); err != nil {
+			return fmt.Errorf("failed to set default_catalog to %s: %w", stem, err)
+		}
+		return nil
+	}
+
+	connector, err := duckdb.NewConnector(memDSN, connInitFn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create memory-bootstrap connector: %w", err)
+	}
+
+	db := sql.OpenDB(connector)
+
+	// Run the init SQL once on a dedicated connection. Macros created here
+	// land in the memory catalog and are visible to all connections since
+	// they share the same in-memory DuckDB instance.
+	m.mainDB = db
+	if err := m.loadInitFile(cfg.InitFilePath); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to execute init file (memory-bootstrap): %w", err)
+	}
+	m.mainDB = nil // will be re-assigned by NewManager
+
+	m.logger.Info("Memory-bootstrap complete",
+		zap.String("file", cfg.MainDBPath),
+		zap.String("catalog", stem),
+	)
+	return db, nil
 }
 
 // InvalidateTableSchema removes a table's schema from the cache.

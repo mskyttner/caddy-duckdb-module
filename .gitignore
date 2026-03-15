@@ -65,6 +65,8 @@ docs/
 !docs/*.txt
 !handlers/docs/
 !handlers/docs/*.md
+!examples/docs/
+!examples/docs/*.md
 
 # Local configuration files
 Caddyfile.local

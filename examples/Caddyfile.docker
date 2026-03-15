@@ -26,6 +26,7 @@
 #   DUCKDB_EXPORTS_URL        - URL prefix for serving exported files (default: <route_prefix>/exports)
 #   DUCKDB_EXPORT_TTL_MINUTES - Lifetime of exported files in minutes (default: 60)
 #   DUCKDB_MAX_MCP_ROWS       - Max rows returned by MCP query tool (default: 500)
+#   DUCKDB_MCP_DOCS_DIR       - Directory of *.md files served as extra MCP resources (default: not set)
 
 :{$DUCKDB_PORT:8080} {
 	# Serve Query UI under the API route prefix (e.g., /duckdb/ui)

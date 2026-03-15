@@ -476,4 +476,7 @@ INSERT OR REPLACE INTO memory.macro_descriptions VALUES
     ('openalex_institution_url',   'Return the OpenAlex URL for an institution integer ID', '{"institution_id": "BIGINT"}'),
     ('openalex_source_url',        'Return the OpenAlex URL for a source integer ID', '{"source_id": "BIGINT"}');
 
-USE diva;
+-- SET search_path is database-level in DuckDB (persists across all pool connections),
+-- unlike USE which is session-scoped. This lets unqualified table names resolve to
+-- diva tables without requiring 'diva.' prefix in every query.
+SET search_path='diva,main';

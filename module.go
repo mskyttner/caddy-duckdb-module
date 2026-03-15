@@ -108,6 +108,13 @@ type DuckDB struct {
 	// Default: 500
 	MaxMCPRows int `json:"max_mcp_rows,omitempty"`
 
+	// MCPDocsDir is an optional directory of *.md files that are served as
+	// additional MCP resources at duckdb://docs/<stem>. Use this to provide
+	// deployment-specific documentation (schema guides, domain references,
+	// query patterns) without recompiling the binary.
+	// Env: DUCKDB_MCP_DOCS_DIR
+	MCPDocsDir string `json:"mcp_docs_dir,omitempty"`
+
 	logger            *zap.Logger
 	dbMgr             *database.Manager
 	authorizer        *auth.Authorizer
@@ -258,6 +265,9 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 			}
 		}
 	}
+	if d.MCPDocsDir == "" {
+		d.MCPDocsDir = os.Getenv("DUCKDB_MCP_DOCS_DIR")
+	}
 	d.exportHandler = handlers.NewExportHandler(d.dbMgr, d.authorizer, d.logger, d.ExportsDir, exportsURL, exportTTL)
 	if d.ExportsDir != "" {
 		d.exportHandler.StartCleanup(ctx, 10*time.Minute)
@@ -269,7 +279,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	}
 
 	// Initialize MCP handler
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, d.MaxMCPRows)
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir)
 
 	// Initialize FTS handler if service URL is configured
 	if d.FTSServiceURL == "" {
@@ -613,6 +623,10 @@ func (d *DuckDB) UnmarshalCaddyfile(dispenser *caddyfile.Dispenser) error {
 					return dispenser.Errf("invalid max_mcp_rows: %v", err)
 				}
 				d.MaxMCPRows = rows
+			case "mcp_docs_dir":
+				if !dispenser.Args(&d.MCPDocsDir) {
+					return dispenser.ArgErr()
+				}
 			default:
 				return dispenser.Errf("unknown subdirective: %s", dispenser.Val())
 			}

@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	_ "embed"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -135,7 +137,16 @@ func registerHelpTool(srv *mcp.Server) {
 // registerDocResources adds Markdown reference documents as MCP resources.
 // LLM clients that support resources can fetch these before writing queries
 // to learn DuckDB-specific syntax and best practices.
-func registerDocResources(srv *mcp.Server) {
+//
+// Two resources are always registered from embedded docs:
+//   - duckdb://docs/sql-syntax
+//   - duckdb://docs/visualization
+//
+// If docsDir is non-empty, every *.md file found directly in that directory
+// is also registered as duckdb://docs/<stem> (filename without extension).
+// This lets operators add deployment-specific guides (e.g. schema references,
+// domain-specific query guidance) without recompiling the binary.
+func registerDocResources(srv *mcp.Server, docsDir string) {
 	type docResource struct {
 		uri         string
 		name        string
@@ -158,6 +169,28 @@ func registerDocResources(srv *mcp.Server) {
 			description: "Query patterns for time series, bar charts, scatter plots, and heatmaps — ready-to-adapt SQL templates for common chart types.",
 			content:     duckdbVizDoc,
 		},
+	}
+
+	// Append any operator-provided .md files from the configured docs directory.
+	if docsDir != "" {
+		entries, _ := os.ReadDir(docsDir)
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(docsDir, e.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			stem := strings.TrimSuffix(e.Name(), ".md")
+			docs = append(docs, docResource{
+				uri:         "duckdb://docs/" + stem,
+				name:        stem,
+				description: "Operator-provided documentation: " + stem,
+				content:     string(data),
+			})
+		}
 	}
 
 	for _, d := range docs {
