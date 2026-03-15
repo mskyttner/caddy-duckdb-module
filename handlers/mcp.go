@@ -619,6 +619,84 @@ func NewMCPHandler(
 		},
 	)
 
+	// --- server_status ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "server_status",
+			Description: "Return current DuckDB memory usage and key runtime settings. " +
+				"Call this before planning a sequence of heavy queries to understand available " +
+				"memory headroom and whether a previous query has spilled to disk. " +
+				"The 'spill_bytes' field is the key signal: a non-zero value means a prior " +
+				"query overflowed RAM and performance may be degraded — simplify the next " +
+				"query or add filters to reduce result size.",
+			InputSchema: buildSchema(),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+
+			// Collect per-tag memory usage from duckdb_memory().
+			_, memRows, _, err := queryRowsRaw(dbMgr, `
+				SELECT tag, memory_usage_bytes, temporary_storage_bytes
+				FROM duckdb_memory()
+				ORDER BY tag
+			`, 100)
+			if err != nil {
+				return textResult("Error querying duckdb_memory(): " + err.Error()), nil
+			}
+
+			type tagEntry struct {
+				MemoryBytes int64 `json:"memory_bytes"`
+				SpillBytes  int64 `json:"spill_bytes"`
+			}
+			tags := make(map[string]tagEntry)
+			var totalMem, totalSpill int64
+			for _, row := range memRows {
+				tag, _ := row["tag"].(string)
+				mem := toInt64(row["memory_usage_bytes"])
+				spill := toInt64(row["temporary_storage_bytes"])
+				tags[tag] = tagEntry{MemoryBytes: mem, SpillBytes: spill}
+				totalMem += mem
+				totalSpill += spill
+			}
+
+			// Collect key settings from duckdb_settings().
+			_, settingRows, _, err := queryRowsRaw(dbMgr, `
+				SELECT name, value
+				FROM duckdb_settings()
+				WHERE name IN ('memory_limit','threads','worker_threads','temp_directory','max_memory')
+				ORDER BY name
+			`, 20)
+			if err != nil {
+				return textResult("Error querying duckdb_settings(): " + err.Error()), nil
+			}
+
+			settings := make(map[string]string)
+			for _, row := range settingRows {
+				name, _ := row["name"].(string)
+				val, _ := row["value"].(string)
+				if name != "" {
+					settings[name] = val
+				}
+			}
+
+			out := map[string]interface{}{
+				"memory_used_bytes": totalMem,
+				"spill_bytes":       totalSpill,
+				"memory_used_mb":    totalMem / (1024 * 1024),
+				"spill_to_disk":     totalSpill > 0,
+				"settings":          settings,
+				"by_tag":            tags,
+			}
+			b, err := json.Marshal(out)
+			if err != nil {
+				return textResult("Error serializing server_status: " + err.Error()), nil
+			}
+			return textResult(string(b)), nil
+		},
+	)
+
 	// --- user-defined macros (table and scalar) ---
 	if macros, err := discoverMacros(dbMgr); err == nil {
 		for _, m := range macros {
@@ -723,6 +801,7 @@ var builtinMCPToolNames = map[string]bool{
 	"list_tables": true, "describe": true, "database_info": true,
 	"summarize": true, "schema": true, "value_counts": true, "sample": true,
 	"column_search": true, "row_counts": true, "sample_by_id_range": true,
+	"server_status": true,
 }
 
 // macroInfo holds metadata for a user-defined DuckDB table macro.

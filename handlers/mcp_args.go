@@ -51,6 +51,23 @@ func textResult(s string) *mcp.CallToolResult {
 	}
 }
 
+// toInt64 converts a value returned by a DuckDB scan (int64, float64, or
+// a formats.SanitizeValue-produced int64) to int64. Returns 0 for nil or
+// unrecognised types.
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case int:
+		return int64(n)
+	}
+	return 0
+}
+
 // apiKeyFromRequest extracts the X-API-Key header from an MCP request.
 // Returns an empty string if Extra is nil or the header is absent.
 func apiKeyFromRequest(req *mcp.CallToolRequest) string {

@@ -74,6 +74,9 @@ var duckdbSQLDoc string
 //go:embed docs/duckdb-visualization.md
 var duckdbVizDoc string
 
+//go:embed docs/suhf-bibliometrics.md
+var suhfBibliometricsDoc string
+
 // registerHelpTool registers the built-in help MCP tool backed by the embedded
 // Markdown docs. Call with no topic for a table of contents; call with a
 // section ID or keyword to retrieve matching section content.
@@ -157,6 +160,14 @@ func registerDocResources(srv *mcp.Server) {
 			name:        "duckdb_visualization",
 			description: "Query patterns for time series, bar charts, scatter plots, and heatmaps — ready-to-adapt SQL templates for common chart types.",
 			content:     duckdbVizDoc,
+		},
+		{
+			uri:  "duckdb://docs/suhf-bibliometrics",
+			name: "suhf_bibliometrics",
+			description: "SUHF 2025 guidance for responsible evaluative bibliometrics in Sweden — 12 recommendations covering model design, data quality, field normalisation, and result interpretation. " +
+				"Includes swemetrics column mapping and ready-to-use SQL patterns. " +
+				"Apply when writing bibliometric queries: prefer fwci/percentiles, warn on n < 50, do not use JIF for cross-field comparisons.",
+			content: suhfBibliometricsDoc,
 		},
 	}
 
