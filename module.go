@@ -382,6 +382,14 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return nil
 	}
 
+	// Export file downloads (no authentication required).
+	// The UUID filename acts as a capability token; only files created by this
+	// server instance are served (gated by the in-memory expiry map).
+	if strings.HasPrefix(r.URL.Path, d.routePrefix+"/exports/") {
+		d.exportHandler.ServeDownload(w, r, d.routePrefix+"/exports")
+		return nil
+	}
+
 	// Authenticate all other requests.
 	// Two modes operate simultaneously:
 	//  1. Trusted user header (vouch-proxy / forward_auth integration) — checked first

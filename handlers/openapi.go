@@ -1561,19 +1561,20 @@ func (h *OpenAPIHandler) generateExportOperation() map[string]interface{} {
 // generateExportDownloadOperation generates the GET /exports/{filename} operation spec.
 func (h *OpenAPIHandler) generateExportDownloadOperation() map[string]interface{} {
 	return map[string]interface{}{
-		"tags":        []string{"Export"},
-		"summary":     "Download an exported file",
-		"description": "Downloads a previously exported file by filename. Only files created by the export endpoint are served (tracked server-side by expiry). Requires `query` permission.",
+		"tags":    []string{"Export"},
+		"summary": "Download an exported file",
+		"description": "Downloads a previously exported file by filename. No authentication required — " +
+			"the UUID filename acts as a capability token. Only files created by this server's export " +
+			"endpoint are served (tracked server-side by expiry map). This makes the URL directly usable " +
+			"from DuckDB clients: `SELECT * FROM read_parquet('http://host/duckdb/exports/file.parquet')`.",
 		"operationId": "downloadExport",
-		"security": []map[string]interface{}{
-			{"ApiKeyAuth": []string{}},
-		},
+		"security":    []interface{}{},
 		"parameters": []map[string]interface{}{
 			{
 				"name":        "filename",
 				"in":          "path",
 				"required":    true,
-				"description": "Filename returned by the POST /export response (e.g. 550e8400-e29b-41d4-a716-446655440000.csv)",
+				"description": "Filename returned by the POST /export response (e.g. 550e8400-e29b-41d4-a716-446655440000.parquet)",
 				"schema": map[string]interface{}{
 					"type": "string",
 				},
@@ -1588,7 +1589,6 @@ func (h *OpenAPIHandler) generateExportDownloadOperation() map[string]interface{
 					"application/octet-stream": map[string]interface{}{"schema": map[string]interface{}{"type": "string", "format": "binary"}},
 				},
 			},
-			"401": map[string]interface{}{"description": "Unauthorized"},
 			"404": map[string]interface{}{"description": "File not found or expired"},
 			"405": map[string]interface{}{"description": "Method not allowed"},
 		},
