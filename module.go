@@ -485,6 +485,10 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		// Export query results to file (returns URL, not row data)
 		d.exportHandler.ServeHTTP(w, r)
 		return nil
+	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/exports/") {
+		// Download a previously exported file
+		d.exportHandler.ServeDownload(w, r, d.routePrefix+"/exports")
+		return nil
 	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/mcp") {
 		// MCP streamable-HTTP endpoint for LLM clients
 		d.mcpHandler.ServeHTTP(w, r)
