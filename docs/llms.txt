@@ -349,6 +349,7 @@ The REST API is available for direct HTTP clients.
 | `/query` | POST | key | Raw SQL query (read-only) |
 | `/execute` | POST | execute | Write SQL (INSERT, UPDATE, DELETE, DDL) |
 | `/export` | POST | key | Run SQL, write result to file, return URL |
+| `/exports/{filename}` | GET | — | Download exported file (no auth required) |
 | `/mcp` | POST | key | MCP streamable-HTTP endpoint |
 | `/openapi.json` | GET | — | OpenAPI 3.0.3 spec |
 | `/health` | GET | — | Health check |
@@ -360,6 +361,13 @@ curl -X POST -H "X-API-Key: KEY" \
   -H "Content-Type: application/json" \
   -d '{"sql":"SELECT * FROM publications WHERE year >= '\''2020'\''","format":"parquet"}' \
   https://<host>/duckdb/export
+```
+
+The response includes a `url` field (e.g. `/duckdb/exports/<uuid>.parquet`). Download requires **no authentication** — the UUID acts as a capability token. This means the URL is directly usable from DuckDB clients without credential setup:
+
+```sql
+-- In any DuckDB client (CLI, Python, R, etc.):
+SELECT * FROM read_parquet('https://<host>/duckdb/exports/<uuid>.parquet');
 ```
 
 ### REST Raw SQL Query
@@ -525,5 +533,6 @@ MCP tool errors are returned as text content prefixed with `"Error: "` rather th
 
 - Internal tables (`api_keys`, `roles`, `permissions`, `trusted_users`) are blocked from all query, export, and execute access.
 - Export files are temporary — the server deletes them after the configured TTL (default: 1 hour). Download promptly or pass the URL to the user.
+- Export download URLs require no authentication — the UUID filename is the capability token. You can pass the URL directly to `read_parquet()`, `read_csv_auto()`, or share it with a user for direct browser download.
 - DuckDB SQL dialect: use `DESCRIBE`, `SHOW TABLES`, `SUMMARIZE`, window functions, `READ_PARQUET()`, `READ_CSV()`, etc.
 - The `execute` permission is separate from `query`. Ask the server operator to grant it if write access is needed.
