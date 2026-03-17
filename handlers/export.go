@@ -318,6 +318,52 @@ func (h *ExportHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ServeDownload handles GET /duckdb/exports/<filename>.
+// It only serves files that were created by this handler (tracked in h.expiry)
+// to prevent directory traversal or serving unrelated files.
+func (h *ExportHandler) ServeDownload(w http.ResponseWriter, r *http.Request, urlPrefix string) {
+	if r.Method != http.MethodGet {
+		h.sendError(w, "Method not allowed. Use GET.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Strip the URL prefix to get the bare filename, then reject anything with
+	// a path separator so we never escape the exports directory.
+	filename := strings.TrimPrefix(r.URL.Path, urlPrefix+"/")
+	if filename == "" || strings.ContainsAny(filename, "/\\") {
+		h.sendError(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Only serve files we created (prevents serving arbitrary host files).
+	h.mu.Lock()
+	_, known := h.expiry[filename]
+	h.mu.Unlock()
+	if !known {
+		h.sendError(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	filePath := filepath.Join(h.exportsDir, filename)
+	f, err := os.Open(filePath)
+	if err != nil {
+		h.sendError(w, "Not found", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+
+	switch {
+	case strings.HasSuffix(filename, ".csv"):
+		w.Header().Set("Content-Type", "text/csv")
+	case strings.HasSuffix(filename, ".json"):
+		w.Header().Set("Content-Type", "application/json")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+	http.ServeContent(w, r, filename, time.Time{}, f)
+}
+
 func (h *ExportHandler) sendError(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)

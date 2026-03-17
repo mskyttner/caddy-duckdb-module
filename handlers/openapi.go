@@ -168,6 +168,9 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 		"/export": map[string]interface{}{
 			"post": h.generateExportOperation(),
 		},
+		"/exports/{filename}": map[string]interface{}{
+			"get": h.generateExportDownloadOperation(),
+		},
 		"/mcp": map[string]interface{}{
 			"post": h.generateMCPOperation(),
 		},
@@ -1551,6 +1554,43 @@ func (h *OpenAPIHandler) generateExportOperation() map[string]interface{} {
 			"403": map[string]interface{}{"description": "Forbidden"},
 			"503": map[string]interface{}{"description": "Export directory not configured"},
 			"500": map[string]interface{}{"description": "Query or file write error"},
+		},
+	}
+}
+
+// generateExportDownloadOperation generates the GET /exports/{filename} operation spec.
+func (h *OpenAPIHandler) generateExportDownloadOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Export"},
+		"summary":     "Download an exported file",
+		"description": "Downloads a previously exported file by filename. Only files created by the export endpoint are served (tracked server-side by expiry). Requires `query` permission.",
+		"operationId": "downloadExport",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "filename",
+				"in":          "path",
+				"required":    true,
+				"description": "Filename returned by the POST /export response (e.g. 550e8400-e29b-41d4-a716-446655440000.csv)",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "File download",
+				"content": map[string]interface{}{
+					"text/csv":                 map[string]interface{}{"schema": map[string]interface{}{"type": "string", "format": "binary"}},
+					"application/json":         map[string]interface{}{"schema": map[string]interface{}{"type": "string", "format": "binary"}},
+					"application/octet-stream": map[string]interface{}{"schema": map[string]interface{}{"type": "string", "format": "binary"}},
+				},
+			},
+			"401": map[string]interface{}{"description": "Unauthorized"},
+			"404": map[string]interface{}{"description": "File not found or expired"},
+			"405": map[string]interface{}{"description": "Method not allowed"},
 		},
 	}
 }

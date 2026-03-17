@@ -39,6 +39,12 @@ services:
       # MCP docs — deployment-specific *.md files served as MCP resources.
       # Edit files in examples/docs/ and restart to update LLM guidance.
       - ./docs:/data/docs:ro
+      # exports — must be world-writable so the caddy user (uid 999) can write files.
+      # Rootless podman maps the container's caddy uid to "other" on the host directory,
+      # so mode 755 (the default for mkdir) blocks writes. Fix: chmod o+w examples/exports
+      # (i.e. mode 777). Run once after creating the directory:
+      #   mkdir -p examples/exports && chmod 777 examples/exports
+      - ./exports:/data/exports
     environment:
       - TZ=UTC
       # Use an in-memory main DB; all data comes from the attached diva DB
@@ -54,6 +60,12 @@ services:
       - DUCKDB_MAX_MCP_ROWS=200
       - DUCKDB_MCP_DOCS_DIR=/data/docs
       - DUCKDB_CORS_ORIGINS=*
+      - DUCKDB_TEMP_DIRECTORY=/data/tmp
+      - DUCKDB_EXPORTS_DIR=/data/exports
+      - DUCKDB_EXPORTS_URL=http://localhost:8099/duckdb/exports
+      - DUCKDB_MCP_DOCS_DIR=/data/docs
+      - XDG_DATA_HOME=/tmp
+      - XDG_CONFIG_HOME=/tmp
     restart: unless-stopped
     healthcheck:
       test: "curl -fsS http://localhost:8080/duckdb/health"

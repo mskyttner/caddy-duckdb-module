@@ -660,7 +660,7 @@ func (m *Manager) openWithMemoryBootstrap(cfg Config) (*sql.DB, error) {
 	connInitFn := func(execer driver.ExecerContext) error {
 		ctx := context.Background()
 		attachSQL := fmt.Sprintf(
-			"ATTACH '%s' AS %s (READ_ONLY)",
+			"ATTACH IF NOT EXISTS '%s' AS %s (READ_ONLY)",
 			strings.ReplaceAll(cfg.MainDBPath, "'", "''"), // escape single quotes in path
 			quoteIdent(stem),
 		)
