@@ -302,6 +302,162 @@ SELECT * FROM read_parquet('parts/*.parquet', union_by_name=true);
 
 ---
 
+## Date, Time and Intervals
+
+### Casting to date and timestamp types
+```sql
+-- varchar → date / timestamp
+SELECT '2024-06-11'::DATE;
+SELECT '2024-06-11 17:20:06.289'::TIMESTAMP;
+SELECT CAST('2024-06-11' AS DATE);
+
+-- timestamp → date (truncate time component)
+SELECT now()::DATE;
+SELECT my_timestamp_col::DATE FROM t;
+```
+
+### Date arithmetic
+```sql
+-- offset by days (integer addition)
+SELECT '2024-06-11'::DATE + 1;            -- next day
+SELECT '2024-06-11'::DATE - 7;            -- one week ago
+
+-- offset by interval
+SELECT date_add('2024-06-11'::DATE, INTERVAL '1 month');
+SELECT date_add('2024-06-11'::DATE, INTERVAL '1 year');
+SELECT '2025-01-15'::DATE + INTERVAL '3 months';   -- returns TIMESTAMP, cast to DATE if needed
+SELECT ('2025-01-15'::DATE + INTERVAL '3 months')::DATE;
+```
+
+### INTERVAL literals
+```sql
+-- keyword syntax
+SELECT INTERVAL '3 days';
+SELECT INTERVAL '1 year 3 months';
+SELECT INTERVAL '7 hours 45 minutes 10 seconds';
+
+-- cast syntax
+SELECT '3.5 years'::INTERVAL;
+SELECT '1 month 15 days'::INTERVAL;
+
+-- duration constructor functions
+SELECT to_years(3), to_months(11), to_days(5);
+SELECT to_hours(12), to_minutes(45), to_seconds(30);
+
+-- interval arithmetic
+SELECT INTERVAL '5 months' + INTERVAL '3 days';
+SELECT INTERVAL '3 days' * 5;
+SELECT INTERVAL '7 years' / 2;
+```
+
+### age() — human-readable duration between two dates
+```sql
+-- returns an INTERVAL; cast to VARCHAR for a readable string
+SELECT age(current_date, '2001-12-20'::DATE);                  -- interval value
+SELECT age(current_date, '2001-12-20'::DATE)::VARCHAR;         -- e.g. "24 years 2 months 29 days"
+
+-- span of a date column in a table
+SELECT age(MAX(publication_date)::DATE, MIN(publication_date)::DATE)::VARCHAR AS span
+FROM works;
+```
+
+### EXTRACT and date_part — get individual components
+```sql
+SELECT EXTRACT('year'  FROM my_date);   -- integer year
+SELECT EXTRACT('month' FROM my_date);
+SELECT EXTRACT('day'   FROM my_date);
+SELECT EXTRACT('dow'   FROM my_date);   -- day of week 0=Sun..6=Sat
+
+-- shorthand functions (equivalent)
+SELECT year(my_date), month(my_date), day(my_date);
+
+-- date_part is identical to EXTRACT
+SELECT date_part('year', my_date);
+```
+
+### date_trunc — truncate to time bucket
+```sql
+-- truncate to start of period (useful for grouping)
+SELECT date_trunc('year',    my_date);   -- 2024-01-01
+SELECT date_trunc('month',   my_date);   -- 2024-06-01
+SELECT date_trunc('week',    my_date);   -- Monday of that week
+SELECT date_trunc('quarter', my_date);
+SELECT date_trunc('decade',  my_date);
+
+-- typical time-series aggregation pattern
+SELECT date_trunc('year', publication_date) AS year, COUNT(*) AS n
+FROM works
+GROUP BY ALL
+ORDER BY year;
+```
+
+### strftime / strptime — format and parse
+```sql
+-- format date/timestamp as string
+SELECT strftime(my_date, '%Y-%m');          -- '2024-06'
+SELECT strftime(my_date, '%Y');             -- '2024'
+SELECT strftime(my_date, '%d %b %Y');       -- '11 Jun 2024'
+
+-- parse string to timestamp
+SELECT strptime('2024-06-11 17:20:06', '%Y-%m-%d %H:%M:%S');
+SELECT strptime('June 11 2024', '%B %d %Y');
+
+-- TRY_STRPTIME returns NULL instead of error on bad input
+SELECT TRY_STRPTIME(my_varchar_date, '%Y-%m-%d') FROM t;
+```
+
+### last_day, dayname, monthname
+```sql
+SELECT last_day('2024-06-11'::DATE);         -- 2024-06-30
+SELECT dayname('2024-06-11'::DATE);          -- 'Tuesday'
+SELECT monthname('2024-06-11'::DATE);        -- 'June'
+```
+
+### Outlier and quality filters
+```sql
+-- filter out garbage dates (year 1000, far-future pre-prints etc.)
+SELECT * FROM works
+WHERE publication_date BETWEEN '1900-01-01' AND (current_date + INTERVAL '2 years');
+
+-- count outliers only
+SELECT COUNT(*) FILTER (
+    EXTRACT('year' FROM publication_date) < 1900
+    OR EXTRACT('year' FROM publication_date) > EXTRACT('year' FROM current_date) + 2
+) AS outliers
+FROM works;
+```
+
+### generate_series for date sequences
+```sql
+-- generate one row per month between two dates
+SELECT unnest(generate_series(
+    '2020-01-01'::TIMESTAMP,
+    '2024-12-01'::TIMESTAMP,
+    INTERVAL '1 month'
+))::DATE AS month;
+
+-- fill gaps in a time series (LEFT JOIN pattern)
+WITH months AS (
+    SELECT unnest(generate_series(
+        '2020-01-01'::TIMESTAMP, now(), INTERVAL '1 month'
+    ))::DATE AS month
+)
+SELECT months.month, COALESCE(COUNT(w.publication_date), 0) AS n
+FROM months
+LEFT JOIN works w ON date_trunc('month', w.publication_date) = months.month
+GROUP BY ALL ORDER BY month;
+```
+
+### Current date and time
+```sql
+SELECT current_date;       -- DATE: today
+SELECT current_timestamp;  -- TIMESTAMP WITH TIME ZONE: now
+SELECT now();              -- alias for current_timestamp
+SELECT today();            -- alias for current_date
+```
+
+---
+
 ## Other Features
 
 ### Case Insensitivity with Preservation

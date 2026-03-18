@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -29,6 +30,24 @@ func argInt(req *mcp.CallToolRequest, name string, def int) int {
 		}
 	}
 	return def
+}
+
+// argBool extracts a named boolean argument from a CallToolRequest.
+// Returns def if the key is absent or not a bool.
+func argBool(req *mcp.CallToolRequest, name string, def bool) bool {
+	m := argMap(req)
+	if v, ok := m[name]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return def
+}
+
+// quoteLiteral escapes a string for use as a SQL string literal (single-quoted).
+// Embedded single quotes are doubled per SQL standard.
+func quoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // argMap unmarshals all tool arguments into a map[string]any.
