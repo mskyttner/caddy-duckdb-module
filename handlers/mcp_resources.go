@@ -115,6 +115,10 @@ func registerHelpTool(srv *mcp.Server) {
 					sb.WriteString(s.source)
 					sb.WriteString(" |\n")
 				}
+				sb.WriteString("\nResources available via resources/read:\n")
+				sb.WriteString("  duckdb://docs/sql-syntax — DuckDB SQL reference\n")
+				sb.WriteString("  duckdb://docs/visualization — Chart query patterns\n")
+				sb.WriteString("(Deployment may provide additional domain-specific resources — call database_info() to list all.)")
 				return textResult(sb.String()), nil
 			}
 
@@ -146,7 +150,15 @@ func registerHelpTool(srv *mcp.Server) {
 // is also registered as duckdb://docs/<stem> (filename without extension).
 // This lets operators add deployment-specific guides (e.g. schema references,
 // domain-specific query guidance) without recompiling the binary.
-func registerDocResources(srv *mcp.Server, docsDir string) {
+// ResourceInfo holds the URI and description of a registered MCP resource,
+// used to surface available resources in the database_info tool.
+type ResourceInfo struct {
+	URI         string
+	Name        string
+	Description string
+}
+
+func registerDocResources(srv *mcp.Server, docsDir string) []ResourceInfo {
 	type docResource struct {
 		uri         string
 		name        string
@@ -193,7 +205,9 @@ func registerDocResources(srv *mcp.Server, docsDir string) {
 		}
 	}
 
+	var infos []ResourceInfo
 	for _, d := range docs {
+		infos = append(infos, ResourceInfo{URI: d.uri, Name: d.name, Description: d.description})
 		srv.AddResource(
 			&mcp.Resource{
 				URI:         d.uri,
@@ -212,4 +226,5 @@ func registerDocResources(srv *mcp.Server, docsDir string) {
 			},
 		)
 	}
+	return infos
 }
