@@ -21,6 +21,8 @@ Three equivalent methods — use any one:
 
 **Roles:** `reader` (read-only), `editor` (CRUD on tables), `admin` (+ raw SQL + execute + export)
 
+Query parameter auth works for **all endpoints including `/duckdb/mcp`**, making it suitable for clients that cannot set custom headers (e.g. claude.ai remote MCP integration — register `https://<host>/duckdb/mcp?api_key=YOUR_KEY` as a remote server).
+
 ---
 
 ## MCP Access (recommended for LLMs)
@@ -80,6 +82,10 @@ Content-Type: application/json
 | `column_search` | query | Find which tables contain a column matching a name/LIKE pattern |
 | `row_counts` | query | Row count for one table or all tables (fast on parquet-backed views) |
 | `sample_by_id_range` | query | Reservoir sample filtered by integer ID range — efficient parquet row-group skipping |
+| `explain` | query | EXPLAIN or EXPLAIN ANALYZE a SQL statement — shows the query plan |
+| `view_definition` | query | Return the SQL definition of a view |
+| `relationships` | query | Discover likely join keys by finding column names shared across tables |
+| `time_range` | query | Min/max/count and span for all date/timestamp columns in a table |
 | `query` | query | Read-only SQL — result capped at `max_rows` (default 200) |
 | `export` | query | Run SQL, write to file, return URL — **use for large result sets** |
 | `execute` | execute | Write SQL: INSERT, UPDATE, DELETE, CREATE TABLE AS SELECT, etc. |
@@ -90,12 +96,14 @@ The server exposes Markdown reference documents as MCP resources. Fetch these wi
 
 > **Note:** Most MCP clients (including Claude Code) do not auto-fetch resources. You must request them explicitly using `resources/read` or `resources/list` to discover what is available.
 
-Two resources are always available (built into the binary):
+Four resources are always available (built into the binary):
 
 | URI | Content |
 |-----|---------|
 | `duckdb://docs/sql-syntax` | FROM-first syntax, GROUP BY ALL, SELECT * EXCLUDE/REPLACE, COLUMNS(), PIVOT/UNPIVOT, ASOF/LATERAL joins, lambda functions, list/struct literals, function chaining, direct file queries |
 | `duckdb://docs/visualization` | SQL templates for time series, bar charts, scatter plots, heatmaps, and ASCII text plots via the `textplot` extension |
+| `duckdb://docs/functions` | LIST/STRUCT/MAP nested type reference, regexp (RE2), JSON operators, unnest patterns, QUALIFY clause |
+| `duckdb://docs/datadomain-meta` | COMMENT ON syntax, tags MAP, `macro_descriptions` table pattern, all `duckdb_*()` system catalog functions with example queries |
 
 Operators may also mount a docs directory (`DUCKDB_MCP_DOCS_DIR`) containing deployment-specific `*.md` files. Each file is served as `duckdb://docs/<stem>` and appears in `resources/list`. Use `resources/list` to discover what this deployment provides:
 
