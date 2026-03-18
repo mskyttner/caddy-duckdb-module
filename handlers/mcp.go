@@ -58,7 +58,7 @@ func NewMCPHandler(
 		Version: "1.0.0",
 	}, nil)
 
-	registerDocResources(srv, docsDir)
+	resources := registerDocResources(srv, docsDir)
 	registerHelpTool(srv)
 
 	// checkPerm authenticates the API key from the request header and checks
@@ -237,23 +237,18 @@ func NewMCPHandler(
 	// --- database_info ---
 	srv.AddTool(
 		&mcp.Tool{
-			Name:        "database_info",
-			Description: "Get an overview of the database: tables, schemas, and loaded extensions.",
+			Name: "database_info",
+			Description: "Get a structured overview of the database: attached catalogs, active search_path, " +
+				"tables, views, macros (names + parameters, no bodies), loaded extensions, and available MCP resources. " +
+				"Use this first to understand what is available before writing queries. " +
+				"To fetch a macro body: FROM duckdb_functions() WHERE function_name='x' SELECT macro_definition.",
 			InputSchema: buildSchema(), // no parameters
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
 				return res, nil
 			}
-			return runQueryTool(dbMgr, `
-				SELECT t.table_catalog AS database, t.table_schema AS schema,
-				       t.table_name, t.table_type,
-				       (SELECT COUNT(*) FROM information_schema.columns c
-				        WHERE c.table_name = t.table_name AND c.table_schema = t.table_schema) AS columns
-				FROM information_schema.tables t
-				WHERE t.table_schema NOT IN ('information_schema','pg_catalog')
-				ORDER BY t.table_catalog, t.table_schema, t.table_name
-			`, 5000)
+			return runDatabaseInfoTool(dbMgr, resources)
 		},
 	)
 
@@ -304,7 +299,7 @@ func NewMCPHandler(
 				}
 				summarizeSQL = "SUMMARIZE (" + userSQL + ")"
 			}
-			return runQueryTool(dbMgr, summarizeSQL, 500)
+			return runSummarizeTool(dbMgr, summarizeSQL)
 		},
 	)
 
@@ -315,11 +310,11 @@ func NewMCPHandler(
 			Description: "Return tables and views with column names and types. " +
 				"More efficient than calling describe() N times for databases with many tables. " +
 				"Use table_pattern (LIKE filter, e.g. 'work%') to limit results. " +
-				"Set compact='true' for a token-efficient dict format: {\"table\":[\"col:TYPE\",...]}. " +
-				"Spans all attached databases.",
+				"By default returns a token-efficient dict format: {\"table\":[\"col:TYPE\",...]}. " +
+				"Set compact='false' for full flat rows. Spans all attached databases.",
 			InputSchema: buildSchema(
 				strProp("table_pattern", "LIKE pattern to filter table names (e.g. 'works', 'work%')", false),
-				strProp("compact", "Return compact dict {table:[col:TYPE,...]} instead of flat rows. 'true' or 'false' (default: false)", false),
+				strProp("compact", "Return compact dict {table:[col:TYPE,...]} instead of flat rows. 'true' or 'false' (default: true)", false),
 			),
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -327,13 +322,14 @@ func NewMCPHandler(
 				return res, nil
 			}
 			tablePattern := argString(req, "table_pattern", "")
-			compact := argString(req, "compact", "false") == "true"
+			compact := argString(req, "compact", "true") == "true"
 
 			patternClause := ""
 			if tablePattern != "" {
 				safe := strings.ReplaceAll(tablePattern, "'", "''")
 				patternClause = fmt.Sprintf(" AND c.table_name LIKE '%s'", safe)
 			}
+			// Always select table_catalog for ordering and multi-catalog key disambiguation.
 			sql := fmt.Sprintf(`
 				SELECT c.table_catalog, c.table_name, c.column_name, c.data_type
 				FROM information_schema.columns c
@@ -347,13 +343,33 @@ func NewMCPHandler(
 			`, patternClause)
 
 			if !compact {
-				return runQueryTool(dbMgr, sql, 10000)
+				// Omit table_catalog in flat mode; use database_info() for catalog context.
+				flatSQL := fmt.Sprintf(`
+					SELECT c.table_name, c.column_name, c.data_type
+					FROM information_schema.columns c
+					JOIN information_schema.tables t
+						ON c.table_name = t.table_name AND c.table_schema = t.table_schema
+					WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
+					  AND t.table_type IN ('BASE TABLE', 'VIEW')
+					  AND c.table_name NOT IN ('api_keys', 'roles', 'permissions', 'trusted_users')
+					%s
+					ORDER BY c.table_catalog, c.table_name, c.ordinal_position
+				`, patternClause)
+				return runQueryTool(dbMgr, flatSQL, 10000)
 			}
 
 			_, rowData, _, err := queryRowsRaw(dbMgr, sql, 10000)
 			if err != nil {
 				return textResult("Error: " + err.Error()), nil
 			}
+			// Detect multi-catalog to qualify keys as "catalog.table" only when needed.
+			seenCatalogs := map[string]bool{}
+			for _, row := range rowData {
+				if cat, _ := row["table_catalog"].(string); cat != "" {
+					seenCatalogs[cat] = true
+				}
+			}
+			multiCatalog := len(seenCatalogs) > 1
 			type entry struct {
 				name string
 				cols []string
@@ -361,15 +377,20 @@ func NewMCPHandler(
 			seen := map[string]int{}
 			var order []entry
 			for _, row := range rowData {
+				catalog, _ := row["table_catalog"].(string)
 				tableName, _ := row["table_name"].(string)
 				colName, _ := row["column_name"].(string)
 				dataType, _ := row["data_type"].(string)
+				key := tableName
+				if multiCatalog {
+					key = catalog + "." + tableName
+				}
 				colEntry := colName + ":" + dataType
-				if idx, ok := seen[tableName]; ok {
+				if idx, ok := seen[key]; ok {
 					order[idx].cols = append(order[idx].cols, colEntry)
 				} else {
-					seen[tableName] = len(order)
-					order = append(order, entry{name: tableName, cols: []string{colEntry}})
+					seen[key] = len(order)
+					order = append(order, entry{name: key, cols: []string{colEntry}})
 				}
 			}
 			var sb strings.Builder
@@ -493,7 +514,7 @@ func NewMCPHandler(
 			}
 			safe := strings.ReplaceAll(colName, "'", "''")
 			sql := fmt.Sprintf(`
-				SELECT c.table_catalog, c.table_name, c.column_name, c.data_type, c.ordinal_position
+				SELECT c.table_name, c.column_name, c.data_type, c.ordinal_position
 				FROM information_schema.columns c
 				JOIN information_schema.tables t
 					ON c.table_name = t.table_name AND c.table_schema = t.table_schema
@@ -783,6 +804,171 @@ func runQueryTool(dbMgr *database.Manager, sql string, limit int) (*mcp.CallTool
 	}
 
 	b, err := json.Marshal(out)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+	return textResult(string(b)), nil
+}
+
+// runDatabaseInfoTool returns a structured JSON overview: catalogs, search_path,
+// tables, views, macros, and available MCP resources.
+func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo) (*mcp.CallToolResult, error) {
+	run := func(sql string, limit int) ([]map[string]any, error) {
+		_, rows, _, err := queryRowsRaw(dbMgr, sql, limit)
+		return rows, err
+	}
+
+	catalogs, err := run(`
+		FROM duckdb_databases()
+		SELECT database_name, type, path, readonly
+		WHERE NOT internal
+		ORDER BY database_name
+	`, 50)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+
+	settings, err := run(`SELECT current_setting('search_path') AS search_path, current_catalog`, 1)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+
+	// schema_name omitted — almost always 'main'; database_name already identifies the catalog.
+	tables, err := run(`
+		FROM duckdb_tables()
+		SELECT database_name, table_name, comment, column_count
+		WHERE NOT internal
+		  AND table_name NOT IN ('api_keys','roles','permissions','trusted_users')
+		ORDER BY database_name, table_name
+	`, 2000)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+
+	views, err := run(`
+		FROM duckdb_views()
+		SELECT database_name, view_name, comment
+		WHERE NOT internal
+		  AND view_name NOT IN ('api_keys','roles','permissions','trusted_users')
+		ORDER BY database_name, view_name
+	`, 2000)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+
+	// schema_name and macro_definition omitted for token efficiency.
+	// Fetch a macro body: FROM duckdb_functions() WHERE function_name='x' SELECT macro_definition
+	macros, err := run(`
+		FROM duckdb_functions()
+		SELECT database_name, function_name, function_type, description, parameters
+		WHERE function_type IN ('table_macro','macro')
+		  AND database_name NOT IN ('system')
+		ORDER BY function_type, function_name
+	`, 500)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+
+	extensions, err := run(`
+		FROM duckdb_extensions()
+		SELECT extension_name, extension_version
+		WHERE loaded = true
+		ORDER BY extension_name
+	`, 100)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+
+	// Enrich macros with operator-provided descriptions and param_types from the
+	// macro_descriptions table (memory.macro_descriptions). This table is
+	// deployment-specific so errors are silently ignored.
+	if macroDescs, err := run(`FROM macro_descriptions SELECT macro_name, description, param_types`, 500); err == nil {
+		descByName := make(map[string]map[string]any, len(macroDescs))
+		for _, d := range macroDescs {
+			if name, ok := d["macro_name"].(string); ok {
+				descByName[name] = d
+			}
+		}
+		for _, m := range macros {
+			if name, ok := m["function_name"].(string); ok {
+				if d, found := descByName[name]; found {
+					if desc := d["description"]; desc != nil {
+						m["description"] = desc
+					}
+					if pt := d["param_types"]; pt != nil {
+						m["param_types"] = pt
+					}
+				}
+			}
+		}
+	}
+
+	// Strip null-valued fields from all row maps to reduce token count.
+	// (e.g. "comment":null and "description":null on every row adds significant noise)
+	for _, section := range [][]map[string]any{tables, views, macros, catalogs} {
+		for _, row := range section {
+			for k, v := range row {
+				if v == nil {
+					delete(row, k)
+				}
+			}
+		}
+	}
+
+	out := map[string]any{
+		"catalogs":   catalogs,
+		"tables":     tables,
+		"views":      views,
+		"macros":     macros,
+		"extensions": extensions,
+	}
+	if len(settings) > 0 {
+		out["search_path"] = settings[0]["search_path"]
+		out["current_catalog"] = settings[0]["current_catalog"]
+	}
+	if len(resources) > 0 {
+		type resInfo struct {
+			URI         string `json:"uri"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		rs := make([]resInfo, len(resources))
+		for i, r := range resources {
+			rs[i] = resInfo{URI: r.URI, Name: r.Name, Description: r.Description}
+		}
+		out["resources"] = rs
+	}
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+	return textResult(string(b)), nil
+}
+
+// runSummarizeTool runs a SUMMARIZE query and strips null-valued stat fields
+// from each row so non-numeric columns don't produce noise like "avg": null.
+func runSummarizeTool(dbMgr *database.Manager, sql string) (*mcp.CallToolResult, error) {
+	cols, data, _, err := queryRowsRaw(dbMgr, sql, 500)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+	// Strip numeric-only stats when NULL (avg, std, q25, median, q75 are NULL for
+	// non-numeric columns). Preserve count, null_count, approx_unique, min, max —
+	// these are meaningful for all types including varchar.
+	numericOnlyStats := map[string]bool{"avg": true, "std": true, "q25": true, "median": true, "q75": true}
+	for _, row := range data {
+		for k, v := range row {
+			if v == nil && numericOnlyStats[k] {
+				delete(row, k)
+			}
+		}
+	}
+	b, err := json.Marshal(map[string]any{
+		"columns": cols,
+		"rows":    data,
+		"count":   len(data),
+	})
 	if err != nil {
 		return textResult("Error: " + err.Error()), nil
 	}
