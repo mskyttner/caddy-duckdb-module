@@ -723,6 +723,161 @@ func NewMCPHandler(
 		},
 	)
 
+	// --- explain ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "explain",
+			Description: "Show the query plan for a SQL statement without executing it. " +
+				"Use this to understand how DuckDB will execute a query — check for full table scans, " +
+				"join order, and filter pushdown before running an expensive query. " +
+				"Set analyze=true to actually execute the query and return real timing and row counts " +
+				"(costs more but gives accurate statistics).",
+			InputSchema: buildSchema(
+				strProp("sql", "SQL statement to explain", true),
+				boolProp("analyze", "If true, execute the query and return actual run-time statistics (EXPLAIN ANALYZE). Default false."),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			sql := argString(req, "sql", "")
+			if strings.TrimSpace(sql) == "" {
+				return textResult("Error: sql argument is required"), nil
+			}
+			prefix := "EXPLAIN "
+			if argBool(req, "analyze", false) {
+				prefix = "EXPLAIN ANALYZE "
+			}
+			return runQueryTool(dbMgr, prefix+sql, 500)
+		},
+	)
+
+	// --- view_definition ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "view_definition",
+			Description: "Return the SQL definition of a view. " +
+				"Use this to understand exactly what a view computes before querying it, " +
+				"or to inspect its column derivations and joins. " +
+				"Fully qualify the name with catalog prefix (e.g. diva.my_view) when multiple catalogs are attached.",
+			InputSchema: buildSchema(
+				strProp("view_name", "Name of the view (optionally catalog-qualified, e.g. diva.my_view)", true),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			raw := strings.TrimSpace(argString(req, "view_name", ""))
+			if raw == "" {
+				return textResult("Error: view_name argument is required"), nil
+			}
+			// Split optional catalog prefix: "catalog.view" or bare "view"
+			catalog, name := "", raw
+			if parts := strings.SplitN(raw, ".", 2); len(parts) == 2 {
+				catalog, name = parts[0], parts[1]
+			}
+			var sql string
+			if catalog != "" {
+				sql = fmt.Sprintf(
+					"FROM duckdb_views() SELECT view_name, sql AS definition "+
+						"WHERE database_name = %s AND view_name = %s AND NOT internal",
+					quoteLiteral(catalog), quoteLiteral(name),
+				)
+			} else {
+				sql = fmt.Sprintf(
+					"FROM duckdb_views() SELECT view_name, database_name, sql AS definition "+
+						"WHERE view_name = %s AND NOT internal",
+					quoteLiteral(name),
+				)
+			}
+			return runQueryTool(dbMgr, sql, 10)
+		},
+	)
+
+	// --- relationships ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "relationships",
+			Description: "Discover implied join relationships by finding column names shared across multiple tables. " +
+				"DuckDB databases (especially harvested or parquet-backed ones) rarely declare foreign keys, " +
+				"so shared column names are the practical join graph. " +
+				"Results are grouped by normalised (lower-case) column name and sorted by how many tables share it. " +
+				"Use min_tables to raise the threshold (default 2). " +
+				"Use table_name to focus on what a specific table can join to. " +
+				"Use max_tables to filter out ubiquitous infrastructure columns (e.g. a 'pid' column in 60 tables).",
+			InputSchema: buildSchema(
+				strProp("table_name", "Optional: restrict to columns that appear in this table (bare or catalog-qualified)", false),
+				numProp("min_tables", "Minimum number of tables sharing the column name (default 2)"),
+				numProp("max_tables", "Maximum number of tables — omit or 0 to show all (useful to suppress universal key columns)"),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			minTables := argInt(req, "min_tables", 2)
+			if minTables < 2 {
+				minTables = 2
+			}
+			maxTables := argInt(req, "max_tables", 0)
+			tableFilter := strings.TrimSpace(argString(req, "table_name", ""))
+
+			// Strip optional catalog prefix for the table name filter
+			filterName := tableFilter
+			if parts := strings.SplitN(tableFilter, ".", 2); len(parts) == 2 {
+				filterName = parts[1]
+			}
+
+			having := fmt.Sprintf("n_tables >= %d", minTables)
+			if maxTables > 0 {
+				having += fmt.Sprintf(" AND n_tables <= %d", maxTables)
+			}
+			if filterName != "" {
+				having += fmt.Sprintf(" AND list_contains(tables, %s)", quoteLiteral(filterName))
+			}
+
+			sql := fmt.Sprintf(`
+				FROM duckdb_columns()
+				SELECT
+					lower(column_name)                                    AS join_key,
+					list(DISTINCT column_name ORDER BY column_name)       AS name_variants,
+					list(DISTINCT table_name  ORDER BY table_name)        AS tables,
+					list(DISTINCT data_type   ORDER BY data_type)         AS data_types,
+					count(DISTINCT table_name)                            AS n_tables
+				WHERE NOT internal
+				GROUP BY lower(column_name)
+				HAVING %s
+				ORDER BY n_tables DESC, join_key`, having)
+			return runQueryTool(dbMgr, sql, 200)
+		},
+	)
+
+	// --- time_range ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "time_range",
+			Description: "Summarise all DATE and TIMESTAMP columns in a table: min, max, span (as human-readable interval), " +
+				"total rows, non-null count, and outlier count (years before 1900 or more than 2 years in the future). " +
+				"Use this before writing time-filtered queries to understand the actual temporal extent of the data " +
+				"and spot data quality issues like garbage dates (year 1000) or far-future pre-prints.",
+			InputSchema: buildSchema(
+				strProp("table_name", "Table name (bare or catalog-qualified, e.g. diva.pub)", true),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			raw := strings.TrimSpace(argString(req, "table_name", ""))
+			if raw == "" {
+				return textResult("Error: table_name argument is required"), nil
+			}
+			return runTimeRangeTool(dbMgr, raw)
+		},
+	)
+
 	// --- user-defined macros (table and scalar) ---
 	if macros, err := discoverMacros(dbMgr); err == nil {
 		for _, m := range macros {
@@ -975,6 +1130,86 @@ func runSummarizeTool(dbMgr *database.Manager, sql string) (*mcp.CallToolResult,
 	return textResult(string(b)), nil
 }
 
+// runTimeRangeTool detects all DATE/TIMESTAMP columns in the given table via
+// duckdb_columns(), then builds a single UNION ALL query to return min, max,
+// span (as varchar interval), total rows, non-null count, and outlier count
+// (year < 1900 or year > current_year + 2) for each column.
+func runTimeRangeTool(dbMgr *database.Manager, tableName string) (*mcp.CallToolResult, error) {
+	// Split optional catalog prefix
+	catalog, name := "", tableName
+	if parts := strings.SplitN(tableName, ".", 2); len(parts) == 2 {
+		catalog, name = parts[0], parts[1]
+	}
+
+	// Fetch date/timestamp columns for this table
+	var colSQL string
+	if catalog != "" {
+		colSQL = fmt.Sprintf(
+			"FROM duckdb_columns() SELECT column_name "+
+				"WHERE database_name = %s AND table_name = %s AND NOT internal "+
+				"AND data_type IN ('DATE','TIMESTAMP','TIMESTAMP WITH TIME ZONE','TIMESTAMPTZ') "+
+				"ORDER BY column_index",
+			quoteLiteral(catalog), quoteLiteral(name),
+		)
+	} else {
+		colSQL = fmt.Sprintf(
+			"FROM duckdb_columns() SELECT column_name "+
+				"WHERE table_name = %s AND NOT internal "+
+				"AND data_type IN ('DATE','TIMESTAMP','TIMESTAMP WITH TIME ZONE','TIMESTAMPTZ') "+
+				"ORDER BY column_index",
+			quoteLiteral(name),
+		)
+	}
+	_, colRows, _, err := queryRowsRaw(dbMgr, colSQL, 100)
+	if err != nil {
+		return textResult("Error fetching columns: " + err.Error()), nil
+	}
+	if len(colRows) == 0 {
+		return textResult("No DATE or TIMESTAMP columns found in " + tableName), nil
+	}
+
+	// Build UNION ALL query — one SELECT per date column
+	var parts []string
+	futureYear := "EXTRACT('year' FROM current_date) + 2"
+	for _, row := range colRows {
+		col, ok := row["column_name"].(string)
+		if !ok {
+			continue
+		}
+		// Quote column name in case it contains mixed case or reserved words
+		qcol := `"` + strings.ReplaceAll(col, `"`, `""`) + `"`
+		frag := fmt.Sprintf(`
+			SELECT
+				%s                                                                  AS column_name,
+				MIN(%s)::VARCHAR                                                    AS min,
+				MAX(%s)::VARCHAR                                                    AS max,
+				age(MAX(%s)::DATE, MIN(%s)::DATE)::VARCHAR                         AS span,
+				COUNT(*)                                                            AS total_rows,
+				COUNT(%s)                                                           AS non_null,
+				COUNT(*) FILTER (
+					EXTRACT('year' FROM %s) < 1900 OR
+					EXTRACT('year' FROM %s) > %s
+				)                                                                   AS outliers
+			FROM %s`,
+			quoteLiteral(col), qcol, qcol, qcol, qcol, qcol, qcol, qcol, futureYear, tableName)
+		parts = append(parts, frag)
+	}
+	unionSQL := strings.Join(parts, "\nUNION ALL\n")
+
+	_, data, _, err := queryRowsRaw(dbMgr, unionSQL, 100)
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+	b, err := json.Marshal(map[string]any{
+		"table":   tableName,
+		"columns": data,
+	})
+	if err != nil {
+		return textResult("Error: " + err.Error()), nil
+	}
+	return textResult(string(b)), nil
+}
+
 // isSimpleIdentifier allows only word characters and dots (for schema.table).
 func isSimpleIdentifier(s string) bool {
 	for _, c := range s {
@@ -993,6 +1228,8 @@ var builtinMCPToolNames = map[string]bool{
 	"summarize": true, "schema": true, "value_counts": true, "sample": true,
 	"column_search": true, "row_counts": true, "sample_by_id_range": true,
 	"server_status": true,
+	"explain":       true, "view_definition": true,
+	"relationships": true, "time_range": true,
 }
 
 // macroInfo holds metadata for a user-defined DuckDB table macro.

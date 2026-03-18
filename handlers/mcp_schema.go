@@ -26,6 +26,11 @@ func enumProp(name, description string, values ...string) schemaProp {
 	return schemaProp{name: name, typ: "string", description: description, enum: values}
 }
 
+// boolProp returns a boolean schema property.
+func boolProp(name, description string) schemaProp {
+	return schemaProp{name: name, typ: "boolean", description: description}
+}
+
 // buildSchema produces a JSON Schema object ({"type":"object",...}) suitable
 // for use as mcp.Tool.InputSchema. The schema is required by the go-sdk and
 // must have type "object".
