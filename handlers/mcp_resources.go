@@ -76,6 +76,12 @@ var duckdbSQLDoc string
 //go:embed docs/duckdb-visualization.md
 var duckdbVizDoc string
 
+//go:embed docs/duckdb-functions.md
+var duckdbFunctionsDoc string
+
+//go:embed docs/duckdb-domain-meta.md
+var duckdbDomainMetaDoc string
+
 // registerHelpTool registers the built-in help MCP tool backed by the embedded
 // Markdown docs. Call with no topic for a table of contents; call with a
 // section ID or keyword to retrieve matching section content.
@@ -118,6 +124,8 @@ func registerHelpTool(srv *mcp.Server) {
 				sb.WriteString("\nResources available via resources/read:\n")
 				sb.WriteString("  duckdb://docs/sql-syntax — DuckDB SQL reference\n")
 				sb.WriteString("  duckdb://docs/visualization — Chart query patterns\n")
+				sb.WriteString("  duckdb://docs/functions — LIST/STRUCT/MAP/regexp/JSON/QUALIFY reference\n")
+				sb.WriteString("  duckdb://docs/datadomain-meta — COMMENT ON, tags, macro_descriptions, duckdb_*() system catalog\n")
 				sb.WriteString("(Deployment may provide additional domain-specific resources — call database_info() to list all.)")
 				return textResult(sb.String()), nil
 			}
@@ -142,9 +150,11 @@ func registerHelpTool(srv *mcp.Server) {
 // LLM clients that support resources can fetch these before writing queries
 // to learn DuckDB-specific syntax and best practices.
 //
-// Two resources are always registered from embedded docs:
+// Four resources are always registered from embedded docs:
 //   - duckdb://docs/sql-syntax
 //   - duckdb://docs/visualization
+//   - duckdb://docs/functions
+//   - duckdb://docs/datadomain-meta
 //
 // If docsDir is non-empty, every *.md file found directly in that directory
 // is also registered as duckdb://docs/<stem> (filename without extension).
@@ -180,6 +190,25 @@ func registerDocResources(srv *mcp.Server, docsDir string) []ResourceInfo {
 			name:        "duckdb_visualization",
 			description: "Query patterns for time series, bar charts, scatter plots, and heatmaps — ready-to-adapt SQL templates for common chart types.",
 			content:     duckdbVizDoc,
+		},
+		{
+			uri:  "duckdb://docs/functions",
+			name: "duckdb_functions",
+			description: "DuckDB nested type and function reference: LIST (indexing, lambdas, comprehensions, set ops), " +
+				"STRUCT (dot/bracket access, unnest, schema evolution), MAP (variable-schema key-value), " +
+				"regular expressions (RE2, regexp_extract with named groups), JSON (extraction operators, " +
+				"json_transform, json_each/json_tree), and QUALIFY clause for window function filtering.",
+			content: duckdbFunctionsDoc,
+		},
+		{
+			uri:  "duckdb://docs/datadomain-meta",
+			name: "duckdb_datadomain_meta",
+			description: "How to enrich a DuckDB database with domain metadata: COMMENT ON (tables, views, columns, " +
+				"scalar and table macros), tags MAP, the macro_descriptions table pattern for MCP tool discovery, " +
+				"and all duckdb_*() system catalog functions (duckdb_tables, duckdb_columns, duckdb_views, " +
+				"duckdb_functions, duckdb_constraints, duckdb_indexes, duckdb_schemas, duckdb_extensions) " +
+				"with key columns and composite discovery queries.",
+			content: duckdbDomainMetaDoc,
 		},
 	}
 

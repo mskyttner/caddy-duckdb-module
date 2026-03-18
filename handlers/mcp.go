@@ -901,7 +901,18 @@ func NewMCPHandler(
 }
 
 // ServeHTTP delegates to the underlying StreamableHTTPHandler.
+// If the api_key query parameter is present and no X-API-Key header is set,
+// it is promoted to the header so the MCP SDK forwards it in req.Extra.Header
+// for per-tool defence-in-depth auth checks. This allows clients that cannot
+// set custom headers (e.g. claude.ai remote MCP integration) to authenticate
+// via query parameter, consistent with the REST API.
 func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-API-Key") == "" {
+		if key := r.URL.Query().Get("api_key"); key != "" {
+			r = r.Clone(r.Context())
+			r.Header.Set("X-API-Key", key)
+		}
+	}
 	h.httpHandler.ServeHTTP(w, r)
 }
 
