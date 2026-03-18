@@ -19,7 +19,9 @@ Three equivalent methods — use any one:
 | **Query param** | `?api_key=YOUR_KEY` |
 | **Basic auth** | `-u apikey:YOUR_KEY` |
 
-**Roles:** `reader` (read-only), `editor` (CRUD on tables), `admin` (+ raw SQL + execute + export)
+**Roles:** `reader` (REST CRUD reads only), `analyst` (REST reads + raw SQL + MCP tools), `editor` (CRUD on tables), `admin` (+ execute + export)
+
+> **MCP note:** All MCP tools issue SQL and require `QUERY` permission. The `reader` role does **not** have this — use `analyst` or higher for any MCP client (including claude.ai remote MCP integration).
 
 Query parameter auth works for **all endpoints including `/duckdb/mcp`**, making it suitable for clients that cannot set custom headers (e.g. claude.ai remote MCP integration — register `https://<host>/duckdb/mcp?api_key=YOUR_KEY` as a remote server).
 
