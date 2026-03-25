@@ -9,6 +9,9 @@
 #   ./tools/auth-db key add -d examples/diva-data/auth.db -r admin
 #   # Save the displayed API key!
 #
+#   # Kurathor — persistent curation database (DuckDB creates the file on first start)
+#   mkdir -p examples/kurathor && chmod 777 examples/kurathor
+#
 # Start / stop:
 #   podman-compose -f examples/compose.yaml up -d
 #   podman-compose -f examples/compose.yaml down
@@ -23,7 +26,7 @@
 
 services:
   diva-mcp:
-    image: caddy-duckdb-diva
+    image: ghcr.io/mskyttner/caddy-duckdb-module
     container_name: diva-mcp
     ports:
       - "8099:8080"
@@ -45,6 +48,11 @@ services:
       # (i.e. mode 777). Run once after creating the directory:
       #   mkdir -p examples/exports && chmod 777 examples/exports
       - ./exports:/data/exports
+      # kurathor.db — persistent read-write curation database.
+      # DuckDB creates the file automatically on first start.
+      # Must be world-writable for rootless podman (same reason as exports above).
+      #   mkdir -p examples/kurathor && chmod 777 examples/kurathor
+      - ./kurathor:/data/kurathor
     environment:
       - TZ=UTC
       # Use an in-memory main DB; all data comes from the attached diva DB
