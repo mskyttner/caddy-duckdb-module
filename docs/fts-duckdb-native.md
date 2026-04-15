@@ -5,7 +5,7 @@ For simpler deployments without the FTS sidecar, you can use DuckDB's Lance exte
 ## Prerequisites
 
 ```sql
-INSTALL lance FROM community;
+INSTALL lance;
 LOAD lance;
 ```
 
@@ -84,7 +84,7 @@ Save as `setup_fts.sql`:
 
 ```sql
 -- Load extension
-INSTALL lance FROM community;
+INSTALL lance;
 LOAD lance;
 
 -- Create inverted index (run once)
