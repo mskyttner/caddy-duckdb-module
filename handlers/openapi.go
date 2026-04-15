@@ -40,7 +40,7 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 		"info": map[string]interface{}{
 			"title":       "Caddy DuckDB REST API",
 			"description": "A REST API for DuckDB database operations with built-in authentication and authorization.",
-			"version":     "1.1.0",
+			"version":     "1.2.0",
 			"contact": map[string]interface{}{
 				"name": "GitHub Repository",
 				"url":  "https://github.com/tobilg/caddy-duckdb-module",
@@ -170,6 +170,9 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 		},
 		"/exports/{filename}": map[string]interface{}{
 			"get": h.generateExportDownloadOperation(),
+		},
+		"/public-exports/{filename}": map[string]interface{}{
+			"get": h.generatePublicExportDownloadOperation(),
 		},
 		"/mcp": map[string]interface{}{
 			"post": h.generateMCPOperation(),
@@ -1474,7 +1477,7 @@ func (h *OpenAPIHandler) generateExportOperation() map[string]interface{} {
 	return map[string]interface{}{
 		"tags":        []string{"Export"},
 		"summary":     "Export query results to a file",
-		"description": "Executes a read-only SQL query and writes the results to a file in the server's export directory. Returns a URL to download the file rather than the row data, which avoids large payloads in API responses and LLM context windows. Requires `query` permission. Supported formats: parquet (default), csv, json.",
+		"description": "Executes a read-only SQL query and writes the results to a file in the server's export directory. Returns a URL to download the file rather than the row data, which avoids large payloads in API responses and LLM context windows. Requires `query` permission. Supported formats: parquet (default), csv, json. Set `public=true` to write to the public-exports directory and return an auth-free URL (UUID capability token) suitable for cross-domain imports — requires DUCKDB_PUBLIC_EXPORTS_DIR to be configured.",
 		"operationId": "exportQuery",
 		"security": []map[string]interface{}{
 			{"ApiKeyAuth": []string{}},
@@ -1501,6 +1504,11 @@ func (h *OpenAPIHandler) generateExportOperation() map[string]interface{} {
 								"type":        "integer",
 								"description": "How long to keep the exported file (minutes). 0 = server default.",
 								"default":     0,
+							},
+							"public": map[string]interface{}{
+								"type":        "boolean",
+								"description": "If true, write to the public-exports directory and return an auth-free URL (UUID capability token). Requires DUCKDB_PUBLIC_EXPORTS_DIR to be configured on the server.",
+								"default":     false,
 							},
 						},
 						"required": []string{"sql"},
@@ -1595,6 +1603,44 @@ func (h *OpenAPIHandler) generateExportDownloadOperation() map[string]interface{
 	}
 }
 
+// generatePublicExportDownloadOperation generates the GET /public-exports/{filename} operation spec.
+func (h *OpenAPIHandler) generatePublicExportDownloadOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":    []string{"Export"},
+		"summary": "Download a public (auth-free) exported file",
+		"description": "Downloads a previously exported file from the public-exports directory. " +
+			"No authentication required — the UUID filename acts as a capability token. " +
+			"Only available when the server is configured with DUCKDB_PUBLIC_EXPORTS_DIR. " +
+			"Only files created via POST /export with public=true are served (tracked server-side by expiry map). " +
+			"This URL is safe to share cross-domain: `SELECT * FROM read_parquet('http://host/duckdb/public-exports/file.parquet')`.",
+		"operationId": "downloadPublicExport",
+		"security":    []interface{}{},
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "filename",
+				"in":          "path",
+				"required":    true,
+				"description": "Filename returned by the POST /export response (e.g. 550e8400-e29b-41d4-a716-446655440000.parquet)",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "File download",
+				"content": map[string]interface{}{
+					"text/csv":                 map[string]interface{}{"schema": map[string]interface{}{"type": "string", "format": "binary"}},
+					"application/json":         map[string]interface{}{"schema": map[string]interface{}{"type": "string", "format": "binary"}},
+					"application/octet-stream": map[string]interface{}{"schema": map[string]interface{}{"type": "string", "format": "binary"}},
+				},
+			},
+			"404": map[string]interface{}{"description": "File not found or expired"},
+			"405": map[string]interface{}{"description": "Method not allowed"},
+		},
+	}
+}
+
 // generateMCPOperation generates the POST /mcp operation spec.
 func (h *OpenAPIHandler) generateMCPOperation() map[string]interface{} {
 	return map[string]interface{}{
@@ -1603,7 +1649,10 @@ func (h *OpenAPIHandler) generateMCPOperation() map[string]interface{} {
 		"description": "Model Context Protocol (MCP) endpoint using the streamable-HTTP transport. " +
 			"LLM clients send JSON-RPC 2.0 messages to interact with the following tools: " +
 			"`query` (read-only SQL), `execute` (write SQL, requires execute permission), " +
-			"`export` (write results to file, returns URL), `list_tables`, `describe`, `database_info`. " +
+			"`export` (write results to file; set public=true for auth-free URL), `list_tables`, `describe`, " +
+			"`database_info`, `schema`, `row_counts`, `sample`, `sample_by_id_range`, `column_search`, " +
+			"`value_counts`, `summarize`, `explain`, `view_definition`, `relationships`, `time_range`, " +
+			"`server_status`, `import_remote`, `list_imports`, `drop_import`, `help`. " +
 			"Auth is identical to the REST API: pass X-API-Key (or use Basic auth / api_key query param). " +
 			"Compatible with any MCP client that supports the streamable-HTTP transport (e.g. Claude Desktop).",
 		"operationId": "mcpStreamableHTTP",
