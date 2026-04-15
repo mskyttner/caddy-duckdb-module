@@ -8,7 +8,7 @@ BINARY_NAME := caddy
 TOOLS_DIR := tools
 DATA_DIR := /tmp/data
 AUTH_DB := $(DATA_DIR)/auth.db
-SWAGGER_UI_VERSION := 5.18.2
+SWAGGER_UI_VERSION := 5.32.3
 SWAGGER_UI_DIR := swagger-ui-dist
 
 # Enable CGO for DuckDB bindings
