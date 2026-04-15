@@ -48,6 +48,7 @@ func NewMCPHandler(
 	logger *zap.Logger,
 	maxRows int,
 	docsDir string,
+	publicExportsURL string,
 ) *MCPHandler {
 	if maxRows <= 0 {
 		maxRows = 500
@@ -60,6 +61,10 @@ func NewMCPHandler(
 
 	resources := registerDocResources(srv, docsDir)
 	registerHelpTool(srv)
+
+	// publicExportsURL is set when public (no-auth) exports are configured.
+	// Exposed via database_info so LLMs can plan cross-domain imports.
+	pubExportsURL := publicExportsURL
 
 	// checkPerm authenticates the API key from the request header and checks
 	// the given operation permission. Returns false and writes an error result
@@ -248,7 +253,7 @@ func NewMCPHandler(
 			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
 				return res, nil
 			}
-			return runDatabaseInfoTool(dbMgr, resources)
+			return runDatabaseInfoTool(dbMgr, resources, pubExportsURL)
 		},
 	)
 
@@ -978,7 +983,7 @@ func runQueryTool(dbMgr *database.Manager, sql string, limit int) (*mcp.CallTool
 
 // runDatabaseInfoTool returns a structured JSON overview: catalogs, search_path,
 // tables, views, macros, and available MCP resources.
-func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo) (*mcp.CallToolResult, error) {
+func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo, publicExportsURL string) (*mcp.CallToolResult, error) {
 	run := func(sql string, limit int) ([]map[string]any, error) {
 		_, rows, _, err := queryRowsRaw(dbMgr, sql, limit)
 		return rows, err
@@ -1000,9 +1005,10 @@ func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo) (*mc
 	}
 
 	// schema_name omitted — almost always 'main'; database_name already identifies the catalog.
+	// estimated_size in duckdb_tables() is an estimated row count (not bytes).
 	tables, err := run(`
 		FROM duckdb_tables()
-		SELECT database_name, table_name, comment, column_count
+		SELECT database_name, table_name, comment, column_count, estimated_size AS estimated_row_count
 		WHERE NOT internal
 		  AND table_name NOT IN ('api_keys','roles','permissions','trusted_users')
 		ORDER BY database_name, table_name
@@ -1103,6 +1109,9 @@ func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo) (*mc
 			rs[i] = resInfo{URI: r.URI, Name: r.Name, Description: r.Description}
 		}
 		out["resources"] = rs
+	}
+	if publicExportsURL != "" {
+		out["export_base_url"] = publicExportsURL
 	}
 
 	b, err := json.Marshal(out)

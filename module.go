@@ -115,6 +115,14 @@ type DuckDB struct {
 	// Env: DUCKDB_MCP_DOCS_DIR
 	MCPDocsDir string `json:"mcp_docs_dir,omitempty"`
 
+	// PublicExportsURL is the base URL under which auth-free public export
+	// files are served (Feature A: export with public=true). When set, the
+	// database_info MCP tool advertises this URL so LLMs know where to direct
+	// partner instances for cross-domain joins.
+	// Example: "https://api.example.com/duckdb/public-exports"
+	// Env: DUCKDB_PUBLIC_EXPORTS_URL
+	PublicExportsURL string `json:"public_exports_url,omitempty"`
+
 	logger            *zap.Logger
 	dbMgr             *database.Manager
 	authorizer        *auth.Authorizer
@@ -268,6 +276,9 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	if d.MCPDocsDir == "" {
 		d.MCPDocsDir = os.Getenv("DUCKDB_MCP_DOCS_DIR")
 	}
+	if d.PublicExportsURL == "" {
+		d.PublicExportsURL = os.Getenv("DUCKDB_PUBLIC_EXPORTS_URL")
+	}
 	d.exportHandler = handlers.NewExportHandler(d.dbMgr, d.authorizer, d.logger, d.ExportsDir, exportsURL, exportTTL)
 	if d.ExportsDir != "" {
 		d.exportHandler.StartCleanup(ctx, 10*time.Minute)
@@ -279,7 +290,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	}
 
 	// Initialize MCP handler
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir)
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir, d.PublicExportsURL)
 
 	// Initialize FTS handler if service URL is configured
 	if d.FTSServiceURL == "" {

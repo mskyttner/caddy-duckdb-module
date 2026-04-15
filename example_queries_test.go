@@ -114,7 +114,7 @@ func setupExampleModule(t *testing.T) (*DuckDB, func()) {
 	d.httpserverHandler = handlers.NewHTTPServerHandler(mgr, authorizer, d.logger)
 	d.executeHandler = handlers.NewExecuteHandler(mgr, authorizer, d.logger)
 	d.exportHandler = handlers.NewExportHandler(mgr, authorizer, d.logger, exportsDir, "/duckdb/exports", time.Hour)
-	d.mcpHandler = handlers.NewMCPHandler(mgr, authorizer, d.exportHandler, d.logger, 200, "")
+	d.mcpHandler = handlers.NewMCPHandler(mgr, authorizer, d.exportHandler, d.logger, 200, "", "")
 
 	return d, func() { mgr.Close() }
 }
@@ -1366,7 +1366,7 @@ func TestExampleQueries_MCP_TableMacro_Registered(t *testing.T) {
 
 	// Re-provision the MCP handler so it discovers the new macro.
 	// The handler discovers macros at construction time, so we rebuild it.
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, 200, "")
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, 200, "", "")
 
 	// The macro should appear in the tools list.
 	resp := mcpCall(t, d, 28, "tools/list", map[string]interface{}{})
@@ -1406,7 +1406,7 @@ func TestExampleQueries_MCP_TableMacro_OmittedParamUsesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create macro: %v", err)
 	}
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, 200, "")
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, 200, "", "")
 
 	// Call without providing n — should use the default (5) and return 5 rows.
 	resp := mcpCall(t, d, 30, "tools/call", map[string]interface{}{
