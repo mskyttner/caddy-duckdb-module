@@ -40,7 +40,7 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 		"info": map[string]interface{}{
 			"title":       "Caddy DuckDB REST API",
 			"description": "A REST API for DuckDB database operations with built-in authentication and authorization.",
-			"version":     "1.0.0",
+			"version":     "1.1.0",
 			"contact": map[string]interface{}{
 				"name": "GitHub Repository",
 				"url":  "https://github.com/tobilg/caddy-duckdb-module",

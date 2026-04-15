@@ -46,7 +46,7 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o caddy ./cmd/caddy
 FROM debian:bookworm-slim
 
 # Swagger UI version to download (can be overridden at build time)
-ARG SWAGGER_UI_VERSION=5.31.1
+ARG SWAGGER_UI_VERSION=5.32.3
 
 # Install minimal runtime dependencies
 # - ca-certificates: Required for HTTPS/TLS connections
@@ -96,7 +96,7 @@ LABEL org.opencontainers.image.title="Caddy DuckDB Module" \
 
 # Install DuckDB CLI and pre-download community extensions (Lance for FTS)
 # The DuckDB version must match the version bundled in duckdb-go-bindings.
-ARG DUCKDB_VERSION=1.5.0
+ARG DUCKDB_VERSION=1.5.2
 RUN curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
       -o /tmp/duckdb.zip && \
     unzip -o /tmp/duckdb.zip -d /usr/local/bin/ && \
