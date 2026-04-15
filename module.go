@@ -115,6 +115,12 @@ type DuckDB struct {
 	// Env: DUCKDB_MCP_DOCS_DIR
 	MCPDocsDir string `json:"mcp_docs_dir,omitempty"`
 
+	// ImportsDir is the filesystem directory where import_remote stores downloaded files.
+	// When set, the import_remote, list_imports, and drop_import MCP tools are available.
+	// The directory is created on first use. Ensure adequate disk space.
+	// Env: DUCKDB_IMPORTS_DIR
+	ImportsDir string `json:"imports_dir,omitempty"`
+
 	// PublicExportsDir is the filesystem directory for auth-free public export files.
 	// When set, export(public=true) is available via the MCP tool and the files
 	// are downloadable without authentication at PublicExportsURL.
@@ -143,6 +149,7 @@ type DuckDB struct {
 	httpserverHandler *handlers.HTTPServerHandler
 	executeHandler    *handlers.ExecuteHandler
 	exportHandler     *handlers.ExportHandler
+	importHandler     *handlers.ImportHandler
 	mcpHandler        *handlers.MCPHandler
 	routePrefix       string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
 }
@@ -310,8 +317,18 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		)
 	}
 
+	// Initialize import handler (for import_remote / list_imports / drop_import MCP tools).
+	if d.ImportsDir == "" {
+		d.ImportsDir = os.Getenv("DUCKDB_IMPORTS_DIR")
+	}
+	d.importHandler = handlers.NewImportHandler(d.dbMgr, d.logger, d.ImportsDir, exportTTL)
+	if d.ImportsDir != "" {
+		d.importHandler.StartCleanup(ctx, 5*time.Minute)
+		d.logger.Info("Import handler initialized", zap.String("imports_dir", d.ImportsDir))
+	}
+
 	// Initialize MCP handler
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir, d.PublicExportsURL)
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.importHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir, d.PublicExportsURL)
 
 	// Initialize FTS handler if service URL is configured
 	if d.FTSServiceURL == "" {
