@@ -18,7 +18,7 @@
 # =============================================================================
 # Stage 1: Builder
 # =============================================================================
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 # Install build dependencies for CGO and DuckDB
 RUN apt-get update && apt-get install -y --no-install-recommends \

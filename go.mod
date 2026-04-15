@@ -1,6 +1,6 @@
 module github.com/tobilg/caddy-duckdb-module
 
-go 1.24.7
+go 1.26.2
 
 require (
 	github.com/apache/arrow/go/v18 v18.0.0-20241007013041-ab95a4d25142
