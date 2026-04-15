@@ -154,19 +154,27 @@ func NewMCPHandler(
 	srv.AddTool(
 		&mcp.Tool{
 			Name:        "export",
-			Description: "Execute a SQL query and write results to a file. Returns a download URL instead of row data — use this for large result sets to avoid filling the context window. Supported formats: parquet (default), csv, json.",
+			Description: "Execute a SQL query and write results to a file. Returns a download URL instead of row data — use this for large result sets to avoid filling the context window. Supported formats: parquet (default), csv, json. Set public=true to get an auth-free URL suitable for cross-domain imports (requires DUCKDB_PUBLIC_EXPORTS_DIR on server).",
 			InputSchema: buildSchema(
 				strProp("sql", "SQL SELECT query to export", true),
 				enumProp("format", "Output format: parquet (default), csv, json", "parquet", "csv", "json"),
 				numProp("ttl_minutes", "File lifetime in minutes (0 = server default)"),
+				boolProp("public", "If true, return an auth-free URL (UUID capability token). Requires public exports to be configured on this server."),
 			),
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
 				return res, nil
 			}
-			if exportHandler == nil || exportHandler.exportsDir == "" {
+			public := argBool(req, "public", false)
+			if exportHandler == nil {
+				return textResult("Error: export handler not initialized"), nil
+			}
+			if !public && exportHandler.exportsDir == "" {
 				return textResult("Error: export directory not configured on this server (set exports_dir in Caddyfile)"), nil
+			}
+			if public && exportHandler.publicExportsDir == "" {
+				return textResult("Error: public export directory not configured on this server (set DUCKDB_PUBLIC_EXPORTS_DIR)"), nil
 			}
 			sql := argString(req, "sql", "")
 			if strings.TrimSpace(sql) == "" {
@@ -178,7 +186,7 @@ func NewMCPHandler(
 			format := argString(req, "format", "parquet")
 			ttlMinutes := argInt(req, "ttl_minutes", 0)
 
-			resp, err := exportHandler.runExport(sql, format, ttlMinutes)
+			resp, err := exportHandler.runExport(sql, format, ttlMinutes, public)
 			if err != nil {
 				return textResult("Error: " + err.Error()), nil
 			}

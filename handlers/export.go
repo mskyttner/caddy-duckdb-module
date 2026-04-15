@@ -23,29 +23,37 @@ import (
 // returning a URL to download the file. This avoids dumping large result sets
 // into the HTTP response (and into LLM context windows).
 type ExportHandler struct {
-	dbMgr      *database.Manager
-	authorizer *auth.Authorizer
-	logger     *zap.Logger
-	exportsDir string
-	exportsURL string        // URL prefix for serving exported files (e.g. /duckdb/exports)
-	defaultTTL time.Duration // how long exported files are kept
-	mu         sync.Mutex
-	expiry     map[string]time.Time // filename → expiry time
+	dbMgr            *database.Manager
+	authorizer       *auth.Authorizer
+	logger           *zap.Logger
+	exportsDir       string
+	exportsURL       string        // URL prefix for serving exported files (e.g. /duckdb/exports)
+	publicExportsDir string        // directory for auth-free public exports (empty = feature disabled)
+	publicExportsURL string        // URL prefix for public export files
+	defaultTTL       time.Duration // how long exported files are kept
+	mu               sync.Mutex
+	expiry           map[string]time.Time // filename → expiry time (auth-gated exports)
+	publicExpiry     map[string]time.Time // filename → expiry time (public exports)
 }
 
 // NewExportHandler creates a new export handler.
-func NewExportHandler(dbMgr *database.Manager, authorizer *auth.Authorizer, logger *zap.Logger, exportsDir, exportsURL string, defaultTTL time.Duration) *ExportHandler {
+// publicExportsDir and publicExportsURL enable auth-free public exports (Feature A).
+// Pass empty strings to disable the feature.
+func NewExportHandler(dbMgr *database.Manager, authorizer *auth.Authorizer, logger *zap.Logger, exportsDir, exportsURL, publicExportsDir, publicExportsURL string, defaultTTL time.Duration) *ExportHandler {
 	if defaultTTL == 0 {
 		defaultTTL = time.Hour
 	}
 	return &ExportHandler{
-		dbMgr:      dbMgr,
-		authorizer: authorizer,
-		logger:     logger,
-		exportsDir: exportsDir,
-		exportsURL: strings.TrimSuffix(exportsURL, "/"),
-		defaultTTL: defaultTTL,
-		expiry:     make(map[string]time.Time),
+		dbMgr:            dbMgr,
+		authorizer:       authorizer,
+		logger:           logger,
+		exportsDir:       exportsDir,
+		exportsURL:       strings.TrimSuffix(exportsURL, "/"),
+		publicExportsDir: publicExportsDir,
+		publicExportsURL: strings.TrimSuffix(publicExportsURL, "/"),
+		defaultTTL:       defaultTTL,
+		expiry:           make(map[string]time.Time),
+		publicExpiry:     make(map[string]time.Time),
 	}
 }
 
@@ -72,7 +80,7 @@ func (h *ExportHandler) StartCleanup(ctx context.Context, interval time.Duration
 func (h *ExportHandler) sweepExpired() {
 	now := time.Now()
 	h.mu.Lock()
-	var expired []string
+	var expired, expiredPublic []string
 	for name, exp := range h.expiry {
 		if now.After(exp) {
 			expired = append(expired, name)
@@ -80,6 +88,14 @@ func (h *ExportHandler) sweepExpired() {
 	}
 	for _, name := range expired {
 		delete(h.expiry, name)
+	}
+	for name, exp := range h.publicExpiry {
+		if now.After(exp) {
+			expiredPublic = append(expiredPublic, name)
+		}
+	}
+	for _, name := range expiredPublic {
+		delete(h.publicExpiry, name)
 	}
 	h.mu.Unlock()
 
@@ -89,6 +105,14 @@ func (h *ExportHandler) sweepExpired() {
 			h.logger.Warn("Failed to remove expired export file", zap.String("path", path), zap.Error(err))
 		} else {
 			h.logger.Info("Removed expired export file", zap.String("file", name))
+		}
+	}
+	for _, name := range expiredPublic {
+		path := filepath.Join(h.publicExportsDir, name)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			h.logger.Warn("Failed to remove expired public export file", zap.String("path", path), zap.Error(err))
+		} else {
+			h.logger.Info("Removed expired public export file", zap.String("file", name))
 		}
 	}
 }
@@ -112,8 +136,18 @@ type ExportResponse struct {
 
 // runExport executes the core export logic and returns the response struct.
 // Called by both ServeHTTP and the MCP export tool.
-func (h *ExportHandler) runExport(sqlQuery, format string, ttlMinutes int) (*ExportResponse, error) {
-	if h.exportsDir == "" {
+// When public is true, the file is written to publicExportsDir and the URL
+// uses publicExportsURL, making the download accessible without authentication.
+func (h *ExportHandler) runExport(sqlQuery, format string, ttlMinutes int, public bool) (*ExportResponse, error) {
+	targetDir := h.exportsDir
+	targetURL := h.exportsURL
+	if public {
+		if h.publicExportsDir == "" {
+			return nil, fmt.Errorf("public export directory not configured (set DUCKDB_PUBLIC_EXPORTS_DIR)")
+		}
+		targetDir = h.publicExportsDir
+		targetURL = h.publicExportsURL
+	} else if h.exportsDir == "" {
 		return nil, fmt.Errorf("export directory not configured")
 	}
 	switch format {
@@ -127,11 +161,11 @@ func (h *ExportHandler) runExport(sqlQuery, format string, ttlMinutes int) (*Exp
 	if ttlMinutes > 0 {
 		ttl = time.Duration(ttlMinutes) * time.Minute
 	}
-	if err := os.MkdirAll(h.exportsDir, 0750); err != nil {
+	if err := os.MkdirAll(targetDir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create exports directory: %w", err)
 	}
 	filename := uuid.New().String() + "." + format
-	filePath := filepath.Join(h.exportsDir, filename)
+	filePath := filepath.Join(targetDir, filename)
 
 	rows, err := h.dbMgr.QueryMain(sqlQuery)
 	if err != nil {
@@ -167,11 +201,15 @@ func (h *ExportHandler) runExport(sqlQuery, format string, ttlMinutes int) (*Exp
 
 	expiresAt := time.Now().Add(ttl)
 	h.mu.Lock()
-	h.expiry[filename] = expiresAt
+	if public {
+		h.publicExpiry[filename] = expiresAt
+	} else {
+		h.expiry[filename] = expiresAt
+	}
 	h.mu.Unlock()
 
 	return &ExportResponse{
-		URL:       h.exportsURL + "/" + filename,
+		URL:       targetURL + "/" + filename,
 		Filename:  filename,
 		Format:    format,
 		Rows:      rowCount,
@@ -345,6 +383,49 @@ func (h *ExportHandler) ServeDownload(w http.ResponseWriter, r *http.Request, ur
 	}
 
 	filePath := filepath.Join(h.exportsDir, filename)
+	f, err := os.Open(filePath)
+	if err != nil {
+		h.sendError(w, "Not found", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+
+	switch {
+	case strings.HasSuffix(filename, ".csv"):
+		w.Header().Set("Content-Type", "text/csv")
+	case strings.HasSuffix(filename, ".json"):
+		w.Header().Set("Content-Type", "application/json")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+	http.ServeContent(w, r, filename, time.Time{}, f)
+}
+
+// ServePublicDownload handles GET /duckdb/public-exports/<filename>.
+// No authentication is required — the UUID filename is the capability token.
+// Only files created by a public export (tracked in h.publicExpiry) are served.
+func (h *ExportHandler) ServePublicDownload(w http.ResponseWriter, r *http.Request, urlPrefix string) {
+	if r.Method != http.MethodGet {
+		h.sendError(w, "Method not allowed. Use GET.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	filename := strings.TrimPrefix(r.URL.Path, urlPrefix+"/")
+	if filename == "" || strings.ContainsAny(filename, "/\\") {
+		h.sendError(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	h.mu.Lock()
+	_, known := h.publicExpiry[filename]
+	h.mu.Unlock()
+	if !known {
+		h.sendError(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	filePath := filepath.Join(h.publicExportsDir, filename)
 	f, err := os.Open(filePath)
 	if err != nil {
 		h.sendError(w, "Not found", http.StatusNotFound)

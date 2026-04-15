@@ -113,7 +113,7 @@ func setupExampleModule(t *testing.T) (*DuckDB, func()) {
 	d.columnsHandler = handlers.NewColumnsHandler(mgr, authorizer, d.logger)
 	d.httpserverHandler = handlers.NewHTTPServerHandler(mgr, authorizer, d.logger)
 	d.executeHandler = handlers.NewExecuteHandler(mgr, authorizer, d.logger)
-	d.exportHandler = handlers.NewExportHandler(mgr, authorizer, d.logger, exportsDir, "/duckdb/exports", time.Hour)
+	d.exportHandler = handlers.NewExportHandler(mgr, authorizer, d.logger, exportsDir, "/duckdb/exports", "", "", time.Hour)
 	d.mcpHandler = handlers.NewMCPHandler(mgr, authorizer, d.exportHandler, d.logger, 200, "", "")
 
 	return d, func() { mgr.Close() }
