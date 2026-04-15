@@ -96,18 +96,20 @@ LABEL org.opencontainers.image.title="Caddy DuckDB Module" \
 
 # Install DuckDB CLI and pre-download community extensions (Lance for FTS)
 # The DuckDB version must match the version bundled in duckdb-go-bindings.
-ARG DUCKDB_VERSION=1.5.2
+ARG DUCKDB_VERSION=1.5.1
 RUN curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
       -o /tmp/duckdb.zip && \
     unzip -o /tmp/duckdb.zip -d /usr/local/bin/ && \
     rm /tmp/duckdb.zip && \
     chmod +x /usr/local/bin/duckdb
 # Pre-install extensions into caddy user's home so they're found at runtime.
-# - lance:     vector/FTS index support (core extension as of DuckDB 1.5.2)
-# - textplot:  ASCII chart functions (tp_bar, tp_sparkline, textplot_histogram)
-# - markdown:  read_markdown() for parsing Markdown files into tables
+# - lance:       vector/FTS index support (core extension as of DuckDB 1.5.2)
+# - http_client: HTTP GET/POST functions; successor to http_request (community)
+# - textplot:    ASCII chart functions (tp_bar, tp_sparkline, textplot_histogram)
+# - markdown:    read_markdown() for parsing Markdown files into tables
 RUN HOME=/home/caddy duckdb -c " \
     INSTALL lance; LOAD lance; \
+    INSTALL http_client FROM community; LOAD http_client; \
     INSTALL textplot FROM community; LOAD textplot; \
     INSTALL markdown FROM community; LOAD markdown; \
     " && \

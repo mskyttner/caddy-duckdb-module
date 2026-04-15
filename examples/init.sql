@@ -2,10 +2,62 @@
 -- The file is bind-mounted into the container at /data/diva/.
 ATTACH '/data/diva/diva_oai_normalized.db' AS diva (READ_ONLY);
 
--- Install and load the http_request community extension.
+-- Attach the Kurathor curation database in read-write mode.
+-- Persists across container restarts. DuckDB creates the file on first start.
+-- Bind-mounted at /data/kurathor/ (directory mount so DuckDB can create WAL files).
+ATTACH '/data/kurathor/kurathor.db' AS kurathor;
+
+-- Bootstrap curation schema in kurathor (idempotent).
+CREATE TABLE IF NOT EXISTS kurathor.curation_notes (
+    id          INTEGER PRIMARY KEY,   -- auto-assigned via nextval or MAX(id)+1
+    pid         BIGINT,                -- DiVA PID (NULL for table-level issues)
+    catalog     VARCHAR DEFAULT 'diva',
+    table_name  VARCHAR,               -- e.g. 'pub', 'publications', 'identifiers'
+    field       VARCHAR,               -- column name, or NULL for structural issues
+    issue       VARCHAR NOT NULL,      -- description of the problem
+    suggestion  VARCHAR,               -- proposed fix or action
+    curator     VARCHAR,               -- 'llm-review', ORCID, or username
+    status      VARCHAR DEFAULT 'open',-- open | accepted | rejected | fixed
+    created_at  TIMESTAMP DEFAULT current_timestamp,
+    updated_at  TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE SEQUENCE IF NOT EXISTS kurathor.curation_notes_id_seq;
+
+-- Reviewer registry: maps the api_key note (human-readable label) → identity.
+-- The api_key note is set when the key is created with `auth-db key add -note <label>`.
+-- LLM curators use 'llm-review' as the curator field; human reviewers register here.
+CREATE TABLE IF NOT EXISTS kurathor.reviewers (
+    key_note     VARCHAR PRIMARY KEY,  -- matches api_keys.note in auth.db
+    display_name VARCHAR NOT NULL,
+    orcid        VARCHAR,              -- e.g. '0000-0002-1825-0097'
+    email        VARCHAR,
+    added_at     TIMESTAMP DEFAULT current_timestamp
+);
+
+-- Audit log: every status change recorded with reviewer identity and timestamp.
+-- Insert a row here whenever curation_notes.status is updated.
+CREATE TABLE IF NOT EXISTS kurathor.curation_reviews (
+    id           INTEGER PRIMARY KEY,
+    note_id      INTEGER NOT NULL,    -- references curation_notes.id
+    reviewer_key VARCHAR,             -- matches reviewers.key_note (NULL = llm-review)
+    old_status   VARCHAR,
+    new_status   VARCHAR NOT NULL,
+    review_note  VARCHAR,
+    changed_at   TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE SEQUENCE IF NOT EXISTS kurathor.curation_reviews_id_seq;
+
+-- Add reviewed_by column to curation_notes if not already present.
+-- (curation_notes may already have rows — use ADD COLUMN IF NOT EXISTS)
+ALTER TABLE kurathor.curation_notes ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR;
+
+-- Install and load the http_client community extension.
+-- Successor to http_request (removed after DuckDB 1.5.0).
 -- Must run before macro creation; macros are created in :memory: (default catalog).
-install http_request from community;
-load http_request;
+install http_client from community;
+load http_client;
 
 -- Load the textplot community extension for ASCII visualizations.
 -- Pre-installed in the base image; no INSTALL step needed.
@@ -38,34 +90,44 @@ create or replace macro json_safe_str(txt) as
 -- Table macro: classify a publication using the Swepub HSV classification API.
 -- Returns: score, code, eng_label, swe_label
 -- Example: FROM api_swepub_classify(title := 'Magnetic resonance');
-create or replace macro api_swepub_classify(level := '3', title := NULL, abstract := NULL, keywords := NULL) as table (
+create or replace macro api_swepub_classify(title := NULL, abstract := NULL, keywords := NULL, l := 5, c := 5) as table (
 
     with classification as (
-        from http_post(
+        select http_post(
             'https://bibliometri.swepub.kb.se/api/v2/classify/',
-            body := ('{"level": "' || coalesce(level::varchar, '3') ||
-                '", "title": "' || memory.json_safe_str(title) ||
-                '", "abstract": "' || memory.json_safe_str(abstract) ||
-                '", "keywords": "' || memory.json_safe_str(keywords) ||
-                '"}')::BLOB,
-            "content_type" := 'application/json'
-        )
-        select
-            j: decode(body)::json,
+            headers => MAP {
+                'Content-Type': 'application/json',
+                'accept': 'application/json'
+            },
+            params => json_object(
+                'level', coalesce(l, 5),
+                'classes', coalesce(c, 5),
+                'title', coalesce(title::varchar, ''),
+                'abstract', coalesce(abstract::varchar, ''),
+                'keywords', coalesce(keywords::varchar, '')
+            )
+        ) as res
     ),
 
     resp as (
         from classification
         select
-            abstract: j->'$.abstract',
-            match_status: j->'$.status',
-            suggestions: unnest(json_transform(j->'$.suggestions', '[ {"@id":"VARCHAR","@type":"VARCHAR","_score":"DOUBLE","broader":{"@id":"VARCHAR","@type":"VARCHAR","code":"VARCHAR","inScheme":{"@id":"VARCHAR"},"prefLabelByLang":{"en":"VARCHAR","sv":"VARCHAR"},"topConceptOf":{"@id":"VARCHAR"}},"code":"VARCHAR","inScheme":{"@id":"VARCHAR"},"prefLabelByLang":{"en":"VARCHAR","sv":"VARCHAR"}} ]')),
-            json_structure(suggestions),
+            j: (res->>'body')::json,
+            status: (res->>'status')::int,
+    ),
+
+    suggestions as (
+        from resp
+        select
+            suggestions: unnest(json_transform(
+                j->'$.suggestions',
+                '[ {"@id":"VARCHAR","@type":"VARCHAR","_score":"DOUBLE","broader":{"@id":"VARCHAR","@type":"VARCHAR","code":"VARCHAR","inScheme":{"@id":"VARCHAR"},"prefLabelByLang":{"en":"VARCHAR","sv":"VARCHAR"},"topConceptOf":{"@id":"VARCHAR"}},"code":"VARCHAR","inScheme":{"@id":"VARCHAR"},"prefLabelByLang":{"en":"VARCHAR","sv":"VARCHAR"}} ]'
+            ))
     )
 
-    from resp
+    from suggestions
     select
-        score: suggestions."_score",
+        score: suggestions."_score"::decimal(8, 3),
         code: suggestions."code",
         eng_label: suggestions."prefLabelByLang".en,
         swe_label: suggestions."prefLabelByLang".sv,
