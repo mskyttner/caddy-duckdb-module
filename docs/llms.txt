@@ -73,7 +73,7 @@ Content-Type: application/json
 
 | Tool | Permission | Description |
 |------|-----------|-------------|
-| `database_info` | query | Tables, schemas, loaded extensions overview |
+| `database_info` | query | Tables, schemas, macros, extensions; includes `estimated_row_count` per table and `export_base_url` when public exports are configured |
 | `list_tables` | query | Tables (and optionally views) with column counts |
 | `describe` | query | Column names and types for a table or view |
 | `schema` | query | Tables + column names/types — filter with `table_pattern`, compact dict with `compact=true` |
@@ -89,7 +89,11 @@ Content-Type: application/json
 | `relationships` | query | Discover likely join keys by finding column names shared across tables |
 | `time_range` | query | Min/max/count and span for all date/timestamp columns in a table |
 | `query` | query | Read-only SQL — result capped at `max_rows` (default 200) |
-| `export` | query | Run SQL, write to file, return URL — **use for large result sets** |
+| `export` | query | Run SQL, write to file, return URL — **use for large result sets**. Set `public=true` for an auth-free URL suitable for cross-domain imports |
+| `server_status` | query | Memory usage, spill-to-disk status, and key DuckDB settings |
+| `import_remote` | query | Download a remote .parquet/.csv/.json file, store locally, register as `FROM alias()` table macro — requires `DUCKDB_IMPORTS_DIR` on server |
+| `list_imports` | query | List active remote imports with alias, source URL, row count, columns, and expiry time |
+| `drop_import` | query | Drop a named import's macro and delete its local file immediately |
 | `execute` | execute | Write SQL: INSERT, UPDATE, DELETE, CREATE TABLE AS SELECT, etc. |
 
 ### MCP Resources
@@ -178,6 +182,34 @@ Response (~15 tokens of data):
 ```
 
 The file is then downloadable at the returned URL. Supported formats: `parquet` (default, smallest), `csv`, `json`.
+
+#### Public exports for cross-domain use
+
+Add `"public": true` to get an auth-free URL at `/duckdb/public-exports/<uuid>.parquet`.
+The URL is also returned in `database_info` as `export_base_url` so partner servers can discover it.
+Requires `DUCKDB_PUBLIC_EXPORTS_DIR` to be configured on the server — the tool returns an error if not.
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+  "name": "export",
+  "arguments": {
+    "sql": "SELECT orcid, display_name FROM authors WHERE orcid IS NOT NULL",
+    "format": "parquet",
+    "public": true,
+    "ttl_minutes": 120
+  }
+}}
+```
+
+Response — the URL requires **no authentication**:
+```json
+{
+  "url": "https://<host>/duckdb/public-exports/8b217c8e-....parquet",
+  "rows": 45231,
+  "size_bytes": 1843200,
+  "expires_at": "2025-01-01T15:00:00Z"
+}
+```
 
 ### Tool: `execute`
 
@@ -343,6 +375,62 @@ Returns a random sample using DuckDB's reservoir sampler (fixed seed — reprodu
 
 ---
 
+## Cross-Domain Queries (MCP)
+
+When you have MCP connections to two or more caddy-duckdb servers, you can join their data
+without S3 or manual file transfer. The workflow is four MCP tool calls:
+
+**Step 1 — discover** what each server has and where exports land:
+```json
+{"method":"tools/call","params":{"name":"database_info","arguments":{}}}
+```
+The response includes `estimated_row_count` per table (use this to decide which server exports —
+push data from the smaller/filtered source to the larger one) and `export_base_url` (only present
+when the server supports public exports; if absent, `export(public=true)` is not available).
+
+**Step 2 — export** from server A (the smaller or filtered dataset):
+```json
+{"method":"tools/call","params":{"name":"export","arguments":{
+  "sql": "SELECT orcid, display_name FROM authors WHERE orcid IS NOT NULL",
+  "format": "parquet",
+  "public": true
+}}}
+```
+Returns `{"url": "https://server-a/duckdb/public-exports/<uuid>.parquet", "rows": 45231, ...}`.
+
+**Step 3 — import** on server B (the one with the large table you want to join against):
+```json
+{"method":"tools/call","params":{"name":"import_remote","arguments":{
+  "url": "https://server-a/duckdb/public-exports/<uuid>.parquet",
+  "alias": "kth_authors",
+  "ttl_minutes": 60
+}}}
+```
+Returns `{"row_count": 45231, "columns": ["orcid","display_name"], "note": "Use FROM kth_authors() ..."}`.
+
+**Step 4 — join** on server B using `query`:
+```json
+{"method":"tools/call","params":{"name":"query","arguments":{
+  "sql": "SELECT k.display_name, count(*) AS works FROM kth_authors() k JOIN authorships a ON k.orcid = a.orcid GROUP BY k.display_name ORDER BY works DESC LIMIT 20"
+}}}
+```
+
+**Step 5 — clean up** when done:
+```json
+{"method":"tools/call","params":{"name":"drop_import","arguments":{"alias":"kth_authors"}}}
+```
+
+### Cross-domain notes
+
+- `import_remote` only accepts `https://` URLs (SSRF protection). The public export URL returned by `export(public=true)` qualifies when the server is accessed over HTTPS.
+- The alias becomes a table macro in DuckDB's `:memory:` catalog. Use `FROM alias()` (with parentheses) in all subsequent queries on server B — the macro is visible across all connections regardless of the active search path.
+- Re-importing the same alias replaces the previous import — idempotent if the source data changes.
+- Call `list_imports` to see active imports, their sizes, and time until expiry.
+- Imports are deleted automatically when the TTL expires. Call `drop_import` to remove immediately and free disk space.
+- `import_remote` requires `DUCKDB_IMPORTS_DIR` on the *receiving* server; `export(public=true)` requires `DUCKDB_PUBLIC_EXPORTS_DIR` on the *exporting* server. If either is absent, the respective tool returns an error message.
+
+---
+
 ## REST Access
 
 The REST API is available for direct HTTP clients.
@@ -359,7 +447,8 @@ The REST API is available for direct HTTP clients.
 | `/query` | POST | key | Raw SQL query (read-only) |
 | `/execute` | POST | execute | Write SQL (INSERT, UPDATE, DELETE, DDL) |
 | `/export` | POST | key | Run SQL, write result to file, return URL |
-| `/exports/{filename}` | GET | — | Download exported file (no auth required) |
+| `/exports/{filename}` | GET | — | Download exported file (no auth required — UUID is capability token) |
+| `/public-exports/{filename}` | GET | — | Download a public export (no auth — only served when `DUCKDB_PUBLIC_EXPORTS_DIR` is configured) |
 | `/mcp` | POST | key | MCP streamable-HTTP endpoint |
 | `/openapi.json` | GET | — | OpenAPI 3.0.3 spec |
 | `/health` | GET | — | Health check |
@@ -419,6 +508,7 @@ curl -X POST -H "X-API-Key: KEY" \
 | Fetching > 200 rows | `export` | Returns URL (~15 tokens), not row data |
 | All rows from a table | `export` with `SELECT *` | Same URL response regardless of size |
 | Delivering data to user | `export` → share the URL | User downloads directly |
+| Cross-domain join needed | `database_info` on both servers → `export(public=true)` on the smaller → `import_remote` on the larger → `query` → `drop_import` | 4 tool calls replaces manual S3 workflow; `estimated_row_count` guides which direction to push data |
 
 **Rule of thumb:** use `schema`/`summarize`/`value_counts`/`sample` to understand the data; use `query` for targeted retrieval; use `export` to deliver.
 
@@ -434,6 +524,10 @@ summarize(sql="... SAMPLE 5000")            → statistical profile without full
 sample_by_id_range(table, start=X, end=Y)  → explore a slice of a large parquet table
 query(sql="SELECT ...")                     → targeted retrieval once you know what you need
 export(sql="SELECT ...")                    → bulk delivery without context cost
+export(sql="...", public=true)              → auth-free URL for cross-domain import
+import_remote(url, alias)                   → materialize remote data as FROM alias()
+list_imports()                              → audit active imports and their expiry
+drop_import(alias)                          → clean up immediately when done
 ```
 
 ---
@@ -448,6 +542,7 @@ export(sql="SELECT ...")                    → bulk delivery without context co
 6. Call `sample` to preview representative rows before writing targeted queries
 7. Call `query` for targeted SQL once you know what you need
 8. Call `export` for any result set you want to deliver or that exceeds `max_rows`
+9. For cross-domain joins: check `database_info.export_base_url` on the exporting server, then `export(public=true)` → `import_remote` on the receiving server → `query` → `drop_import`
 
 ---
 
