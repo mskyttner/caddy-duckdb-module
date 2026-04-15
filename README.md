@@ -9,6 +9,8 @@ A Caddy server module that provides a REST API for DuckDB database operations wi
 - **Raw SQL Queries**: Execute custom SQL queries with proper authorization
 - **Write SQL (Execute)**: INSERT/UPDATE/DELETE/DDL via dedicated endpoint with `can_execute` permission
 - **Bulk Export**: Run any SQL and get a server-side file URL — token-efficient for LLM clients
+- **Public (Auth-Free) Exports**: Export to a public URL using a UUID capability token, safe to share across domains or pass to other DuckDB instances via `read_parquet(url)`
+- **Remote Import**: Download a parquet/csv/json file from an HTTPS URL into a named table macro, queryable as `FROM alias()` across all connections
 - **MCP Endpoint**: Model Context Protocol streamable-HTTP endpoint for LLM tool use
 - **Multi-Format Responses**: JSON, CSV, Parquet, Apache Arrow IPC
 - **Advanced Querying**: Pagination, sorting, filtering, sparse fieldsets, group-by aggregation, keyset cursor pagination
@@ -190,6 +192,13 @@ If you get CGO-related errors, ensure:
             # exports_url        /duckdb/exports
             # export_ttl_minutes 60
 
+            # Public (auth-free) export directory (optional; enables export public=true)
+            # public_exports_dir /data/public-exports
+            # public_exports_url /duckdb/public-exports
+
+            # Remote import staging directory (optional; enables import_remote MCP tool)
+            # imports_dir        /data/imports
+
             # MCP row limit (default: 500)
             # max_mcp_rows 500
         }
@@ -218,6 +227,9 @@ If you get CGO-related errors, ensure:
 | `exports_dir` | string | *unset* | Filesystem directory for export files. Required to enable `/export`. |
 | `exports_url` | string | `<prefix>/exports` | URL prefix for serving exported files. |
 | `export_ttl_minutes` | int | `60` | How long exported files are kept before cleanup. |
+| `public_exports_dir` | string | *unset* | Filesystem directory for public (auth-free) export files. Required to enable `export(public=true)`. |
+| `public_exports_url` | string | `<prefix>/public-exports` | URL prefix for public-export file downloads. |
+| `imports_dir` | string | *unset* | Staging directory for remote imports. Required to enable the `import_remote` MCP tool. |
 | `max_mcp_rows` | int | `500` | Maximum rows returned by the MCP query tool. |
 
 **Performance Tuning:**
@@ -316,6 +328,9 @@ All settings can be configured via environment variables:
 | `DUCKDB_EXPORTS_DIR` | *(unset)* | Directory for export files (required to enable `/export`) |
 | `DUCKDB_EXPORTS_URL` | `<prefix>/exports` | URL prefix for exported files |
 | `DUCKDB_EXPORT_TTL_MINUTES` | `60` | Export file lifetime in minutes |
+| `DUCKDB_PUBLIC_EXPORTS_DIR` | *(unset)* | Directory for public export files (required to enable `export(public=true)`) |
+| `DUCKDB_PUBLIC_EXPORTS_URL` | `<prefix>/public-exports` | URL prefix for public-export file downloads |
+| `DUCKDB_IMPORTS_DIR` | *(unset)* | Staging directory for downloaded remote imports (required to enable `import_remote`) |
 | `DUCKDB_MAX_MCP_ROWS` | `500` | Max rows returned by MCP query tool |
 
 Example with custom settings:
@@ -476,6 +491,8 @@ All endpoints are under the configured route prefix (default: `/duckdb`). All re
 | `/query/{sql}/result.{fmt}` | GET | key | Read-only SQL via URL |
 | `/execute` | POST | key + `can_execute` | Run write SQL (INSERT/UPDATE/DELETE/DDL) |
 | `/export` | POST | key | Run SQL → server file → return URL |
+| `/exports/{filename}` | GET | none (UUID token) | Download an exported file |
+| `/public-exports/{filename}` | GET | none (UUID token) | Download a public exported file (no auth needed) |
 | `/mcp` | POST | key | MCP streamable-HTTP endpoint |
 | `/` | POST | key | httpserver-compatible: raw SQL body |
 | `/` | HEAD | key | Endpoint probe (duck-ui) |
@@ -648,6 +665,23 @@ Response (~15 tokens regardless of result size):
 
 Exported files are served as static files from the configured `exports_dir` and are cleaned up after `export_ttl_minutes` (default: 60).
 
+#### Public (Auth-Free) Exports
+
+Set `"public": true` to write to the `public_exports_dir` instead and receive an auth-free URL (UUID capability token). The URL is safe to share cross-domain — no API key is needed to download it:
+
+```bash
+curl -X POST http://localhost:8080/duckdb/export \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM users", "format": "parquet", "public": true}'
+# {"url":"/duckdb/public-exports/550e8400-e29b-41d4-a716-446655440000.parquet", ...}
+
+# Consume directly from another DuckDB instance — no auth required:
+# SELECT * FROM read_parquet('http://host/duckdb/public-exports/550e8400....parquet')
+```
+
+Requires `DUCKDB_PUBLIC_EXPORTS_DIR` to be configured. Files expire on the same TTL as regular exports.
+
 ### httpserver-Compatible Endpoint
 
 `POST /duckdb/` — Accepts raw SQL in the request body; compatible with [duck-ui](https://github.com/caioricciuti/duck-ui) and other ClickHouse-compatible clients.
@@ -685,7 +719,7 @@ Available MCP tools:
 | `export` | Run SQL → server file → return URL (requires `exports_dir`) |
 | `list_tables` | List all non-internal tables |
 | `describe` | Column schema for a table or view |
-| `database_info` | Database statistics and metadata |
+| `database_info` | Database statistics and metadata, including estimated row counts and export base URL |
 | `schema` | Compact multi-table schema — use `table_pattern` to filter |
 | `row_counts` | Row counts for all (or filtered) tables |
 | `sample` | Reservoir sample from a table — better than LIMIT for exploration |
@@ -693,6 +727,14 @@ Available MCP tools:
 | `column_search` | Find which tables contain a column matching a name pattern |
 | `value_counts` | Top-N distinct values with count, percentage, and cumulative percentage |
 | `summarize` | Per-column statistics (min/max/avg/null%/approx_unique) |
+| `explain` | Show the query plan for a SQL statement |
+| `view_definition` | Show the SQL definition of a view or table macro |
+| `relationships` | Infer foreign-key relationships from column naming patterns |
+| `time_range` | Find min/max dates in timestamp columns across tables |
+| `server_status` | DuckDB memory usage and settings snapshot |
+| `import_remote` | Download a parquet/csv/json file from an HTTPS URL and register it as a queryable table macro (`FROM alias()`) |
+| `list_imports` | List all active remote imports with row counts, size, and expiry |
+| `drop_import` | Remove a named remote import and delete the local file |
 | `help` | DuckDB documentation browser — no args for TOC, keyword for a section |
 
 MCP resources (read-only reference documents accessible at `duckdb://` URIs):
@@ -779,7 +821,7 @@ Rate limiting is intentionally **not** implemented in this module. Caddy has exc
 
 ### OpenAPI Specification
 
-A complete OpenAPI 3.0 specification is available at `/duckdb/openapi.json`:
+A complete OpenAPI 3.0 specification (API version 1.2.0) is available at `/duckdb/openapi.json`:
 
 ```bash
 curl http://localhost:8080/duckdb/openapi.json
@@ -845,6 +887,7 @@ caddy-duckdb-module/
 │   ├── query.go           # Query handler
 │   ├── execute.go         # Execute handler (write SQL)
 │   ├── export.go          # Export handler (SQL → file → URL)
+│   ├── import.go          # Remote import handler (download → parquet → table macro)
 │   ├── mcp.go             # MCP streamable-HTTP endpoint
 │   ├── mcp_args.go        # MCP tool argument parsing helpers
 │   ├── mcp_schema.go      # MCP tool JSON schema definitions

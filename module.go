@@ -115,6 +115,26 @@ type DuckDB struct {
 	// Env: DUCKDB_MCP_DOCS_DIR
 	MCPDocsDir string `json:"mcp_docs_dir,omitempty"`
 
+	// ImportsDir is the filesystem directory where import_remote stores downloaded files.
+	// When set, the import_remote, list_imports, and drop_import MCP tools are available.
+	// The directory is created on first use. Ensure adequate disk space.
+	// Env: DUCKDB_IMPORTS_DIR
+	ImportsDir string `json:"imports_dir,omitempty"`
+
+	// PublicExportsDir is the filesystem directory for auth-free public export files.
+	// When set, export(public=true) is available via the MCP tool and the files
+	// are downloadable without authentication at PublicExportsURL.
+	// Env: DUCKDB_PUBLIC_EXPORTS_DIR
+	PublicExportsDir string `json:"public_exports_dir,omitempty"`
+
+	// PublicExportsURL is the base URL under which auth-free public export
+	// files are served. Defaults to "<route_prefix>/public-exports" when
+	// PublicExportsDir is set. The database_info MCP tool advertises this URL
+	// so partner instances know where to fetch exported files.
+	// Example: "https://api.example.com/duckdb/public-exports"
+	// Env: DUCKDB_PUBLIC_EXPORTS_URL
+	PublicExportsURL string `json:"public_exports_url,omitempty"`
+
 	logger            *zap.Logger
 	dbMgr             *database.Manager
 	authorizer        *auth.Authorizer
@@ -129,6 +149,7 @@ type DuckDB struct {
 	httpserverHandler *handlers.HTTPServerHandler
 	executeHandler    *handlers.ExecuteHandler
 	exportHandler     *handlers.ExportHandler
+	importHandler     *handlers.ImportHandler
 	mcpHandler        *handlers.MCPHandler
 	routePrefix       string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
 }
@@ -268,7 +289,25 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	if d.MCPDocsDir == "" {
 		d.MCPDocsDir = os.Getenv("DUCKDB_MCP_DOCS_DIR")
 	}
-	d.exportHandler = handlers.NewExportHandler(d.dbMgr, d.authorizer, d.logger, d.ExportsDir, exportsURL, exportTTL)
+	// Public exports: only enabled when PublicExportsDir is configured.
+	if d.PublicExportsDir == "" {
+		d.PublicExportsDir = os.Getenv("DUCKDB_PUBLIC_EXPORTS_DIR")
+	}
+	// pubExportsURL is only computed (non-empty) when the feature is active.
+	// An empty value suppresses export_base_url from database_info output.
+	var pubExportsURL string
+	if d.PublicExportsDir != "" {
+		pubExportsURL = d.PublicExportsURL
+		if pubExportsURL == "" {
+			if envPubURL := os.Getenv("DUCKDB_PUBLIC_EXPORTS_URL"); envPubURL != "" {
+				pubExportsURL = envPubURL
+			} else {
+				pubExportsURL = d.routePrefix + "/public-exports"
+			}
+		}
+		d.PublicExportsURL = pubExportsURL // store resolved value
+	}
+	d.exportHandler = handlers.NewExportHandler(d.dbMgr, d.authorizer, d.logger, d.ExportsDir, exportsURL, d.PublicExportsDir, pubExportsURL, exportTTL)
 	if d.ExportsDir != "" {
 		d.exportHandler.StartCleanup(ctx, 10*time.Minute)
 		d.logger.Info("Export handler initialized",
@@ -278,8 +317,18 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		)
 	}
 
+	// Initialize import handler (for import_remote / list_imports / drop_import MCP tools).
+	if d.ImportsDir == "" {
+		d.ImportsDir = os.Getenv("DUCKDB_IMPORTS_DIR")
+	}
+	d.importHandler = handlers.NewImportHandler(d.dbMgr, d.logger, d.ImportsDir, exportTTL)
+	if d.ImportsDir != "" {
+		d.importHandler.StartCleanup(ctx, 5*time.Minute)
+		d.logger.Info("Import handler initialized", zap.String("imports_dir", d.ImportsDir))
+	}
+
 	// Initialize MCP handler
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir)
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.importHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir, d.PublicExportsURL)
 
 	// Initialize FTS handler if service URL is configured
 	if d.FTSServiceURL == "" {
@@ -387,6 +436,14 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// server instance are served (gated by the in-memory expiry map).
 	if strings.HasPrefix(r.URL.Path, d.routePrefix+"/exports/") {
 		d.exportHandler.ServeDownload(w, r, d.routePrefix+"/exports")
+		return nil
+	}
+
+	// Public export file downloads (no authentication required).
+	// Files are placed here by export(public=true) via the MCP tool.
+	// The UUID filename is the capability token; only tracked files are served.
+	if strings.HasPrefix(r.URL.Path, d.routePrefix+"/public-exports/") {
+		d.exportHandler.ServePublicDownload(w, r, d.routePrefix+"/public-exports")
 		return nil
 	}
 

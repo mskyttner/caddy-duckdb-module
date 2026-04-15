@@ -50,6 +50,27 @@ func quoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// isAlias reports whether s is a valid SQL identifier usable as a macro alias:
+// starts with a letter or underscore, followed by letters, digits, or underscores.
+// Dots and spaces are not allowed (unlike isSafeIdentifier which permits dots).
+func isAlias(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for i, c := range s {
+		if i == 0 {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+				return false
+			}
+		} else {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // argMap unmarshals all tool arguments into a map[string]any.
 // Returns an empty map on missing or invalid arguments.
 func argMap(req *mcp.CallToolRequest) map[string]any {

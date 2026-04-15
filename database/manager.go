@@ -417,6 +417,15 @@ func (m *Manager) ExecMain(query string, args ...interface{}) (sql.Result, error
 	return m.mainDB.ExecContext(ctx, query, args...)
 }
 
+// ExecMainTimeout executes a query on the main database with a custom timeout.
+// Use this for operations that are expected to take longer than the default
+// query timeout, such as downloading large remote files.
+func (m *Manager) ExecMainTimeout(timeout time.Duration, query string, args ...interface{}) (sql.Result, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return m.mainDB.ExecContext(ctx, query, args...)
+}
+
 // QueryMain executes a query on the main database with timeout.
 // Note: The caller is responsible for closing the returned rows.
 // The context will automatically be cleaned up when the timeout expires.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tobilg/caddy-duckdb-module/auth"
@@ -45,9 +46,11 @@ func NewMCPHandler(
 	dbMgr *database.Manager,
 	authorizer *auth.Authorizer,
 	exportHandler *ExportHandler,
+	importHandler *ImportHandler,
 	logger *zap.Logger,
 	maxRows int,
 	docsDir string,
+	publicExportsURL string,
 ) *MCPHandler {
 	if maxRows <= 0 {
 		maxRows = 500
@@ -60,6 +63,10 @@ func NewMCPHandler(
 
 	resources := registerDocResources(srv, docsDir)
 	registerHelpTool(srv)
+
+	// publicExportsURL is set when public (no-auth) exports are configured.
+	// Exposed via database_info so LLMs can plan cross-domain imports.
+	pubExportsURL := publicExportsURL
 
 	// checkPerm authenticates the API key from the request header and checks
 	// the given operation permission. Returns false and writes an error result
@@ -149,19 +156,27 @@ func NewMCPHandler(
 	srv.AddTool(
 		&mcp.Tool{
 			Name:        "export",
-			Description: "Execute a SQL query and write results to a file. Returns a download URL instead of row data — use this for large result sets to avoid filling the context window. Supported formats: parquet (default), csv, json.",
+			Description: "Execute a SQL query and write results to a file. Returns a download URL instead of row data — use this for large result sets to avoid filling the context window. Supported formats: parquet (default), csv, json. Set public=true to get an auth-free URL suitable for cross-domain imports (requires DUCKDB_PUBLIC_EXPORTS_DIR on server).",
 			InputSchema: buildSchema(
 				strProp("sql", "SQL SELECT query to export", true),
 				enumProp("format", "Output format: parquet (default), csv, json", "parquet", "csv", "json"),
 				numProp("ttl_minutes", "File lifetime in minutes (0 = server default)"),
+				boolProp("public", "If true, return an auth-free URL (UUID capability token). Requires public exports to be configured on this server."),
 			),
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
 				return res, nil
 			}
-			if exportHandler == nil || exportHandler.exportsDir == "" {
+			public := argBool(req, "public", false)
+			if exportHandler == nil {
+				return textResult("Error: export handler not initialized"), nil
+			}
+			if !public && exportHandler.exportsDir == "" {
 				return textResult("Error: export directory not configured on this server (set exports_dir in Caddyfile)"), nil
+			}
+			if public && exportHandler.publicExportsDir == "" {
+				return textResult("Error: public export directory not configured on this server (set DUCKDB_PUBLIC_EXPORTS_DIR)"), nil
 			}
 			sql := argString(req, "sql", "")
 			if strings.TrimSpace(sql) == "" {
@@ -173,7 +188,7 @@ func NewMCPHandler(
 			format := argString(req, "format", "parquet")
 			ttlMinutes := argInt(req, "ttl_minutes", 0)
 
-			resp, err := exportHandler.runExport(sql, format, ttlMinutes)
+			resp, err := exportHandler.runExport(sql, format, ttlMinutes, public)
 			if err != nil {
 				return textResult("Error: " + err.Error()), nil
 			}
@@ -248,7 +263,7 @@ func NewMCPHandler(
 			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
 				return res, nil
 			}
-			return runDatabaseInfoTool(dbMgr, resources)
+			return runDatabaseInfoTool(dbMgr, resources, pubExportsURL)
 		},
 	)
 
@@ -878,6 +893,127 @@ func NewMCPHandler(
 		},
 	)
 
+	// --- import_remote ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "import_remote",
+			Description: "Download a remote parquet/csv/json file and register it as a local " +
+				"table macro, making it queryable as FROM alias() in any subsequent query call. " +
+				"Data is fetched server-to-server via DuckDB httpfs and stored as local parquet " +
+				"for fast repeated queries. " +
+				"Typical workflow: call export(public=true) on server A to get an auth-free URL, " +
+				"then import_remote on server B, then query('FROM alias() JOIN local_table ON ...'). " +
+				"Re-importing the same alias replaces the previous import (idempotent).",
+			InputSchema: buildSchema(
+				strProp("url", "HTTPS URL of remote file (.parquet, .csv, or .json)", true),
+				strProp("alias", "Name for the imported data — used as FROM alias() in queries; must be a valid SQL identifier", true),
+				numProp("ttl_minutes", "How long to keep the import in minutes (default: 60)"),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			if importHandler == nil || importHandler.importsDir == "" {
+				return textResult("Error: imports directory not configured on this server (set DUCKDB_IMPORTS_DIR)"), nil
+			}
+			url := argString(req, "url", "")
+			alias := argString(req, "alias", "")
+			ttlMinutes := argInt(req, "ttl_minutes", 0)
+
+			if strings.TrimSpace(url) == "" {
+				return textResult("Error: url argument is required"), nil
+			}
+			if strings.TrimSpace(alias) == "" {
+				return textResult("Error: alias argument is required"), nil
+			}
+			if builtinMCPToolNames[alias] {
+				return textResult("Error: alias " + alias + " conflicts with a built-in tool name"), nil
+			}
+
+			entry, err := importHandler.ImportRemote(url, alias, ttlMinutes)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			b, _ := json.Marshal(map[string]any{
+				"alias":      entry.Alias,
+				"source_url": entry.SourceURL,
+				"row_count":  entry.RowCount,
+				"size_bytes": entry.SizeBytes,
+				"columns":    entry.Columns,
+				"expires_at": entry.ExpiresAt,
+				"note":       "Use FROM " + entry.Alias + "() in query calls to access this data.",
+			})
+			return textResult(string(b)), nil
+		},
+	)
+
+	// --- list_imports ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "list_imports",
+			Description: "List all active remote data imports on this server. Shows alias names, source URLs, row counts, sizes, and expiry times. Use FROM alias() in query calls to access imported data.",
+			InputSchema: buildSchema(),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			if importHandler == nil || importHandler.importsDir == "" {
+				return textResult("Error: imports directory not configured on this server (set DUCKDB_IMPORTS_DIR)"), nil
+			}
+			entries := importHandler.ListImports()
+			type row struct {
+				Alias     string    `json:"alias"`
+				SourceURL string    `json:"source_url"`
+				RowCount  int64     `json:"row_count"`
+				SizeBytes int64     `json:"size_bytes"`
+				Columns   []string  `json:"columns"`
+				ExpiresAt time.Time `json:"expires_at"`
+			}
+			rows := make([]row, len(entries))
+			for i, e := range entries {
+				rows[i] = row{
+					Alias:     e.Alias,
+					SourceURL: e.SourceURL,
+					RowCount:  e.RowCount,
+					SizeBytes: e.SizeBytes,
+					Columns:   e.Columns,
+					ExpiresAt: e.ExpiresAt,
+				}
+			}
+			b, _ := json.Marshal(map[string]any{"imports": rows, "count": len(rows)})
+			return textResult(string(b)), nil
+		},
+	)
+
+	// --- drop_import ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "drop_import",
+			Description: "Remove an imported remote dataset. Drops the table macro and deletes the local parquet file immediately. Use list_imports to see active imports.",
+			InputSchema: buildSchema(
+				strProp("alias", "Alias of the import to remove", true),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			if importHandler == nil || importHandler.importsDir == "" {
+				return textResult("Error: imports directory not configured on this server (set DUCKDB_IMPORTS_DIR)"), nil
+			}
+			alias := argString(req, "alias", "")
+			if strings.TrimSpace(alias) == "" {
+				return textResult("Error: alias argument is required"), nil
+			}
+			if err := importHandler.DropImport(alias); err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			return textResult("Dropped import: " + alias), nil
+		},
+	)
+
 	// --- user-defined macros (table and scalar) ---
 	if macros, err := discoverMacros(dbMgr); err == nil {
 		for _, m := range macros {
@@ -978,7 +1114,7 @@ func runQueryTool(dbMgr *database.Manager, sql string, limit int) (*mcp.CallTool
 
 // runDatabaseInfoTool returns a structured JSON overview: catalogs, search_path,
 // tables, views, macros, and available MCP resources.
-func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo) (*mcp.CallToolResult, error) {
+func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo, publicExportsURL string) (*mcp.CallToolResult, error) {
 	run := func(sql string, limit int) ([]map[string]any, error) {
 		_, rows, _, err := queryRowsRaw(dbMgr, sql, limit)
 		return rows, err
@@ -1000,9 +1136,10 @@ func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo) (*mc
 	}
 
 	// schema_name omitted — almost always 'main'; database_name already identifies the catalog.
+	// estimated_size in duckdb_tables() is an estimated row count (not bytes).
 	tables, err := run(`
 		FROM duckdb_tables()
-		SELECT database_name, table_name, comment, column_count
+		SELECT database_name, table_name, comment, column_count, estimated_size AS estimated_row_count
 		WHERE NOT internal
 		  AND table_name NOT IN ('api_keys','roles','permissions','trusted_users')
 		ORDER BY database_name, table_name
@@ -1103,6 +1240,9 @@ func runDatabaseInfoTool(dbMgr *database.Manager, resources []ResourceInfo) (*mc
 			rs[i] = resInfo{URI: r.URI, Name: r.Name, Description: r.Description}
 		}
 		out["resources"] = rs
+	}
+	if publicExportsURL != "" {
+		out["export_base_url"] = publicExportsURL
 	}
 
 	b, err := json.Marshal(out)
@@ -1241,6 +1381,7 @@ var builtinMCPToolNames = map[string]bool{
 	"server_status": true,
 	"explain":       true, "view_definition": true,
 	"relationships": true, "time_range": true,
+	"import_remote": true, "list_imports": true, "drop_import": true,
 }
 
 // macroInfo holds metadata for a user-defined DuckDB table macro.

@@ -48,6 +48,12 @@ services:
       # (i.e. mode 777). Run once after creating the directory:
       #   mkdir -p examples/exports && chmod 777 examples/exports
       - ./exports:/data/exports
+      # public-exports — auth-free downloads for cross-domain imports (export public=true)
+      #   mkdir -p examples/public-exports && chmod 777 examples/public-exports
+      - ./public-exports:/data/public-exports
+      # imports — local parquet files downloaded by import_remote MCP tool
+      #   mkdir -p examples/imports && chmod 777 examples/imports
+      - ./imports:/data/imports
       # kurathor.db — persistent read-write curation database.
       # DuckDB creates the file automatically on first start.
       # Must be world-writable for rootless podman (same reason as exports above).
@@ -71,6 +77,9 @@ services:
       - DUCKDB_TEMP_DIRECTORY=/data/tmp
       - DUCKDB_EXPORTS_DIR=/data/exports
       - DUCKDB_EXPORTS_URL=http://localhost:8099/duckdb/exports
+      - DUCKDB_PUBLIC_EXPORTS_DIR=/data/public-exports
+      - DUCKDB_PUBLIC_EXPORTS_URL=http://localhost:8099/duckdb/public-exports
+      - DUCKDB_IMPORTS_DIR=/data/imports
       - DUCKDB_MCP_DOCS_DIR=/data/docs
       - XDG_DATA_HOME=/tmp
       - XDG_CONFIG_HOME=/tmp
