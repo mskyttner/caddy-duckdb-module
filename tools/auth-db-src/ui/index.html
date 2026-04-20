@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auth DB Manager</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
+body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #1e293b; font-size: 14px; }
+
+header { background: #1e293b; color: #fff; padding: 0 1.5rem; display: flex; align-items: center; gap: 2rem; height: 52px; }
+.dl-btn { margin-left: auto; background: #16a34a; color: #fff; border: none; padding: 0.3rem 0.8rem; border-radius: 5px; font-size: 0.78rem; font-weight: 500; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+.dl-btn:hover { background: #15803d; }
+header h1 { font-size: 0.95rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+nav { display: flex; gap: 0.2rem; }
+nav button { background: transparent; color: #94a3b8; border: none; padding: 0.35rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.82rem; transition: all 0.15s; }
+nav button:hover { color: #fff; background: rgba(255,255,255,0.1); }
+nav button.active { color: #fff; background: #2563eb; }
+
+main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1rem; margin-bottom: 1.25rem; }
+.card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; }
+.card .val { font-size: 2rem; font-weight: 700; color: #2563eb; line-height: 1; }
+.card .lbl { font-size: 0.7rem; color: #64748b; margin-top: 0.35rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.db-path { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.65rem 1rem; font-family: monospace; font-size: 0.78rem; color: #475569; margin-bottom: 1.25rem; }
+
+.section { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+.section-header { padding: 0.85rem 1.25rem; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; }
+.section-header h2 { font-size: 0.875rem; font-weight: 600; }
+.section-hint { font-size: 0.7rem; color: #94a3b8; }
+
+table { width: 100%; border-collapse: collapse; }
+th { background: #f8fafc; padding: 0.55rem 1rem; text-align: left; font-size: 0.7rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
+td { padding: 0.6rem 1rem; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #fafbfc; }
+.empty { padding: 2rem; text-align: center; color: #94a3b8; font-size: 0.825rem; }
+
+.badge { display: inline-flex; align-items: center; padding: 0.18rem 0.55rem; border-radius: 9999px; font-size: 0.7rem; font-weight: 500; }
+.badge-blue { background: #dbeafe; color: #1d4ed8; }
+.badge-green { background: #dcfce7; color: #15803d; }
+.badge-red { background: #fee2e2; color: #b91c1c; }
+
+.btn { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.3rem 0.65rem; border-radius: 5px; border: none; cursor: pointer; font-size: 0.78rem; font-weight: 500; transition: all 0.12s; white-space: nowrap; }
+.btn-primary { background: #2563eb; color: #fff; }
+.btn-primary:hover { background: #1d4ed8; }
+.btn-danger { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.btn-danger:hover { background: #fee2e2; }
+.btn-ghost { background: transparent; color: #64748b; border: 1px solid #e2e8f0; }
+.btn-ghost:hover { background: #f1f5f9; }
+.btn-sm { padding: 0.18rem 0.45rem; font-size: 0.72rem; }
+.btn-icon { padding: 0.18rem 0.35rem; font-size: 0.85rem; line-height: 1; }
+
+.form-row { padding: 0.85rem 1.25rem; border-top: 1px solid #e2e8f0; background: #f8fafc; display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; }
+.field { display: flex; flex-direction: column; gap: 0.25rem; }
+.field label { font-size: 0.68rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+.field input, .field select { padding: 0.38rem 0.6rem; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 0.82rem; background: #fff; min-width: 110px; }
+.field input:focus, .field select:focus { outline: 2px solid #2563eb; outline-offset: 1px; border-color: transparent; }
+
+.mono { font-family: ui-monospace, monospace; font-size: 0.8rem; }
+
+.key-cell { display: flex; align-items: center; gap: 0.3rem; }
+.note-view { display: flex; align-items: center; gap: 0.3rem; }
+.note-view .btn-icon { opacity: 0; transition: opacity 0.1s; }
+tr:hover .note-view .btn-icon { opacity: 1; }
+.key-val { font-family: ui-monospace, monospace; font-size: 0.78rem; color: #334155; }
+
+.perm-grid { display: flex; gap: 4px; }
+.perm-dot { width: 22px; text-align: center; font-size: 0.78rem; }
+
+.check-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; padding: 0.1rem 0; }
+.check-item { display: flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; cursor: pointer; user-select: none; }
+.check-item input[type=checkbox] { cursor: pointer; accent-color: #2563eb; }
+
+#toast { position: fixed; bottom: 1.25rem; right: 1.25rem; background: #1e293b; color: #fff; padding: 0.55rem 0.9rem; border-radius: 6px; font-size: 0.8rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 999; max-width: 320px; }
+#toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="toast"></div>
+<header>
+  <h1>Auth DB Manager</h1>
+  <nav id="nav">
+    <button onclick="showTab('dashboard')" class="active">Dashboard</button>
+    <button onclick="showTab('keys')">API Keys</button>
+    <button onclick="showTab('users')">Trusted Users</button>
+    <button onclick="showTab('roles')">Roles</button>
+    <button onclick="showTab('permissions')">Permissions</button>
+  </nav>
+  <a href="/api/download" class="dl-btn">&#11123; Download auth.db</a>
+</header>
+<main id="content"></main>
+
+<script>
+'use strict';
+
+const TABS = ['dashboard','keys','users','roles','permissions'];
+let revealedKeys = new Set(); // full key values the user has unmasked
+let editingKey   = null;     // key whose note cell is currently in edit mode
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+
+async function api(method, path, body) {
+  const opts = { method, headers: {'Content-Type': 'application/json'} };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+function toast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = isError ? '#b91c1c' : '#1e293b';
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+// Escape for HTML text content
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Produce a JS string literal safe inside an HTML onclick="..." attribute.
+// JSON.stringify gives us a double-quoted, escaped JS string; we then
+// HTML-escape all four special chars — crucially including " so the double
+// quotes don't break out of the surrounding onclick="..." attribute.
+function jsStr(s) {
+  return JSON.stringify(String(s ?? ''))
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function check(v) { return v ? '✓' : '·'; }
+
+function showTab(tab) {
+  document.querySelectorAll('nav button').forEach((b, i) => b.classList.toggle('active', TABS[i] === tab));
+  ({ dashboard: loadDashboard, roles: loadRoles, keys: loadKeys,
+     permissions: loadPermissions, users: loadUsers })[tab]();
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
+
+async function loadDashboard() {
+  const info = await api('GET', '/api/info');
+  document.getElementById('content').innerHTML = `
+    <div class="db-path">&#128193; ${esc(info.db_path)}</div>
+    <div class="cards">
+      <div class="card"><div class="val">${info.roles}</div><div class="lbl">Roles</div></div>
+      <div class="card"><div class="val">${info.active_keys}</div><div class="lbl">Active Keys</div></div>
+      <div class="card"><div class="val">${info.keys}</div><div class="lbl">Total Keys</div></div>
+      <div class="card"><div class="val">${info.permissions}</div><div class="lbl">Permissions</div></div>
+      <div class="card"><div class="val">${info.active_users}</div><div class="lbl">Trusted Users</div></div>
+    </div>`;
+}
+
+// ── Roles ──────────────────────────────────────────────────────────────────
+
+async function loadRoles() {
+  const roles = await api('GET', '/api/roles');
+  const rows = roles.length
+    ? roles.map(r => `<tr>
+        <td><span class="badge badge-blue">${esc(r.name)}</span></td>
+        <td>${esc(r.description)}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteRole(${jsStr(r.name)})">Remove</button></td>
+      </tr>`).join('')
+    : `<tr><td colspan="3" class="empty">No roles defined.</td></tr>`;
+
+  document.getElementById('content').innerHTML = `
+    <div class="section">
+      <div class="section-header"><h2>Roles</h2></div>
+      <table>
+        <thead><tr><th>Name</th><th>Description</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="form-row">
+        <div class="field"><label>Name</label><input id="r-name" placeholder="analyst"></div>
+        <div class="field"><label>Description</label><input id="r-desc" placeholder="Optional description" style="min-width:240px"></div>
+        <button class="btn btn-primary" onclick="addRole()">Add Role</button>
+      </div>
+    </div>`;
+}
+
+async function addRole() {
+  const name = document.getElementById('r-name').value.trim();
+  const desc = document.getElementById('r-desc').value.trim();
+  if (!name) { toast('Name is required', true); return; }
+  try {
+    await api('POST', '/api/roles', {name, description: desc});
+    toast(`Role '${name}' created`);
+    loadRoles();
+  } catch(e) { toast(e.message, true); }
+}
+
+async function deleteRole(name) {
+  if (!confirm(`Remove role '${name}'?`)) return;
+  try {
+    await api('DELETE', `/api/roles/${encodeURIComponent(name)}`);
+    toast(`Role '${name}' removed`);
+    loadRoles();
+  } catch(e) {
+    if (e.message.includes('force=true')) {
+      if (!confirm(`${e.message}\n\nProceed with force removal?`)) return;
+      try {
+        await api('DELETE', `/api/roles/${encodeURIComponent(name)}?force=true`);
+        toast(`Role '${name}' and its keys/permissions removed`);
+        loadRoles();
+      } catch(e2) { toast(e2.message, true); }
+    } else { toast(e.message, true); }
+  }
+}
+
+// ── API Keys ───────────────────────────────────────────────────────────────
+
+async function loadKeys() {
+  const [keys, roles] = await Promise.all([api('GET', '/api/keys'), api('GET', '/api/roles')]);
+
+  const rows = keys.length
+    ? keys.map(k => {
+        const revealed = revealedKeys.has(k.key);
+        const display  = revealed ? k.key : (k.key.length > 10 ? k.key.slice(0,10) + '…' : k.key);
+        return `<tr>
+          <td>
+            <div class="key-cell">
+              <span class="key-val" id="kv-${esc(k.key.slice(0,8))}">${esc(display)}</span>
+              <button class="btn btn-ghost btn-sm btn-icon" title="${revealed ? 'Hide key' : 'Reveal key'}"
+                onclick="toggleKey(${jsStr(k.key)})">${revealed ? '&#128584;' : '&#128065;'}</button>
+              <button class="btn btn-ghost btn-sm btn-icon" title="Copy to clipboard"
+                onclick="copyKey(${jsStr(k.key)})">&#9113;</button>
+            </div>
+          </td>
+          <td><span class="badge badge-blue">${esc(k.role)}</span></td>
+          <td data-note-key="${esc(k.key)}">
+            <div class="note-view">
+              <span>${esc(k.note)}</span>
+              <button class="btn btn-ghost btn-sm btn-icon" title="Edit note"
+                onclick="inlineEditNote(${jsStr(k.key)},${jsStr(k.note)})">&#9998;</button>
+            </div>
+          </td>
+          <td>${esc(k.created_at)}</td>
+          <td>${k.expires_at ? esc(k.expires_at) : '<span style="color:#94a3b8">never</span>'}</td>
+          <td><span class="badge ${k.active ? 'badge-green' : 'badge-red'}">${k.active ? 'active' : 'inactive'}</span></td>
+          <td><button class="btn btn-danger btn-sm" onclick="deleteKey(${jsStr(k.key)})">Remove</button></td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="7" class="empty">No API keys.</td></tr>`;
+
+  const roleOpts = roles.map(r => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join('');
+
+  document.getElementById('content').innerHTML = `
+    <div class="section">
+      <div class="section-header">
+        <h2>API Keys</h2>
+        <span class="section-hint">&#128065; reveals / &#9113; copies a key</span>
+      </div>
+      <table>
+        <thead><tr><th>Key</th><th>Role</th><th>Note</th><th>Created</th><th>Expires</th><th>Status</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="form-row">
+        <div class="field"><label>Role</label><select id="k-role">${roleOpts}</select></div>
+        <div class="field"><label>Key (blank = generate)</label><input id="k-key" class="mono" placeholder="auto-generated" style="min-width:180px"></div>
+        <div class="field"><label>Note</label><input id="k-note" placeholder="alice@example.com"></div>
+        <div class="field"><label>Expires (RFC3339)</label><input id="k-expires" placeholder="2027-12-31T23:59:59Z" style="min-width:170px"></div>
+        <button class="btn btn-primary" onclick="addKey()">Add Key</button>
+      </div>
+    </div>`;
+}
+
+function toggleKey(key) {
+  if (revealedKeys.has(key)) revealedKeys.delete(key);
+  else revealedKeys.add(key);
+  loadKeys();
+}
+
+async function copyKey(key) {
+  try {
+    await navigator.clipboard.writeText(key);
+    toast('Key copied to clipboard');
+  } catch { toast('Copy failed — reveal key and copy manually', true); }
+}
+
+async function addKey() {
+  const role    = document.getElementById('k-role').value;
+  const key     = document.getElementById('k-key').value.trim();
+  const note    = document.getElementById('k-note').value.trim();
+  const expires = document.getElementById('k-expires').value.trim();
+  try {
+    const res = await api('POST', '/api/keys', {role, key: key || '', note, expires});
+    revealedKeys.add(res.key); // auto-reveal newly created key
+    toast('API key created — revealed in the list');
+    loadKeys();
+  } catch(e) { toast(e.message, true); }
+}
+
+async function deleteKey(key) {
+  if (!confirm('Remove this API key? This cannot be undone.')) return;
+  try {
+    await api('DELETE', `/api/keys/${encodeURIComponent(key)}`);
+    revealedKeys.delete(key);
+    toast('Key removed');
+    loadKeys();
+  } catch(e) { toast(e.message, true); }
+}
+
+function inlineEditNote(key, currentNote) {
+  editingKey = key;
+  const cell = [...document.querySelectorAll('[data-note-key]')]
+    .find(el => el.dataset.noteKey === key);
+  if (!cell) return;
+  cell.innerHTML = `
+    <div style="display:flex;gap:4px;align-items:center">
+      <input id="note-edit" type="text" value="${esc(currentNote)}"
+        style="padding:3px 6px;border:1px solid #2563eb;border-radius:4px;font-size:0.78rem;flex:1;min-width:140px"
+        onkeydown="if(event.key==='Enter')saveNote();if(event.key==='Escape')loadKeys()">
+      <button class="btn btn-primary btn-sm" onclick="saveNote()">&#10003;</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadKeys()">&#10007;</button>
+    </div>`;
+  const input = document.getElementById('note-edit');
+  input.focus();
+  input.select();
+}
+
+async function saveNote() {
+  const key  = editingKey;
+  const note = document.getElementById('note-edit')?.value ?? '';
+  if (!key) return;
+  try {
+    await api('PATCH', `/api/keys/${encodeURIComponent(key)}`, {note});
+    toast('Note updated');
+    editingKey = null;
+    loadKeys();
+  } catch(e) { toast(e.message, true); }
+}
+
+// ── Permissions ────────────────────────────────────────────────────────────
+
+const OPS = ['can_create','can_read','can_update','can_delete','can_query','can_execute'];
+const OP_LABELS = ['C','R','U','D','Q','E'];
+const OP_TITLES = ['create','read','update','delete','query','execute'];
+
+async function loadPermissions() {
+  const [perms, roles] = await Promise.all([api('GET', '/api/permissions'), api('GET', '/api/roles')]);
+
+  const rows = perms.length
+    ? perms.map(p => {
+        const dots = OPS.map((op, i) =>
+          `<div class="perm-dot" title="${OP_TITLES[i]}" style="color:${p[op]?'#16a34a':'#cbd5e1'}">${p[op]?'&#10003;':'&#183;'}</div>`
+        ).join('');
+        return `<tr>
+          <td><span class="badge badge-blue">${esc(p.role)}</span></td>
+          <td class="mono">${esc(p.table)}</td>
+          <td><div class="perm-grid">${dots}</div></td>
+          <td>
+            <button class="btn btn-ghost btn-sm" onclick="editPerm(${jsStr(p.role)},${jsStr(p.table)},${OPS.map(o=>p[o]).join(',')})">Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="deletePerm(${jsStr(p.role)},${jsStr(p.table)})">Remove</button>
+          </td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="4" class="empty">No permissions defined.</td></tr>`;
+
+  const roleOpts = roles.map(r => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join('');
+  const checks = OPS.map((op, i) =>
+    `<label class="check-item">
+       <input type="checkbox" id="p-${op}" ${i === 1 ? 'checked' : ''}>
+       ${OP_TITLES[i]}
+     </label>`
+  ).join('');
+
+  document.getElementById('content').innerHTML = `
+    <div class="section">
+      <div class="section-header">
+        <h2>Permissions</h2>
+        <span class="section-hint">C=create &nbsp;R=read &nbsp;U=update &nbsp;D=delete &nbsp;Q=query &nbsp;E=execute</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th><th>Table</th>
+            <th><div class="perm-grid">${OP_LABELS.map(l=>`<div class="perm-dot">${l}</div>`).join('')}</div></th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="form-row">
+        <div class="field"><label>Role</label><select id="p-role">${roleOpts}</select></div>
+        <div class="field"><label>Table (* = all)</label><input id="p-table" value="*" style="min-width:120px"></div>
+        <div class="field"><label>Operations</label><div class="check-row">${checks}</div></div>
+        <button class="btn btn-primary" onclick="savePerm()">Set Permission</button>
+      </div>
+    </div>`;
+}
+
+function editPerm(role, table, ...vals) {
+  document.getElementById('p-role').value  = role;
+  document.getElementById('p-table').value = table;
+  OPS.forEach((op, i) => { document.getElementById(`p-${op}`).checked = vals[i]; });
+  document.getElementById('p-role').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+async function savePerm() {
+  const body = {
+    role:  document.getElementById('p-role').value,
+    table: document.getElementById('p-table').value.trim(),
+  };
+  if (!body.table) { toast('Table is required', true); return; }
+  OPS.forEach(op => { body[op] = document.getElementById(`p-${op}`).checked; });
+  try {
+    await api('POST', '/api/permissions', body);
+    toast(`Permission set for '${body.role}' on '${body.table}'`);
+    loadPermissions();
+  } catch(e) { toast(e.message, true); }
+}
+
+async function deletePerm(role, table) {
+  if (!confirm(`Remove permission for '${role}' on '${table}'?`)) return;
+  try {
+    await api('DELETE', `/api/permissions/${encodeURIComponent(role)}/${encodeURIComponent(table)}`);
+    toast('Permission removed');
+    loadPermissions();
+  } catch(e) { toast(e.message, true); }
+}
+
+// ── Trusted Users ──────────────────────────────────────────────────────────
+
+async function loadUsers() {
+  const [users, roles] = await Promise.all([api('GET', '/api/users'), api('GET', '/api/roles')]);
+
+  const rows = users.length
+    ? users.map(u => `<tr>
+        <td class="mono">${esc(u.username)}</td>
+        <td><span class="badge badge-blue">${esc(u.role)}</span></td>
+        <td>${esc(u.note)}</td>
+        <td><span class="badge ${u.active ? 'badge-green' : 'badge-red'}">${u.active ? 'active' : 'inactive'}</span></td>
+        <td>${esc(u.created_at)}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteUser(${jsStr(u.username)})">Remove</button></td>
+      </tr>`).join('')
+    : `<tr><td colspan="6" class="empty">No trusted users.</td></tr>`;
+
+  const roleOpts = roles.map(r => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join('');
+
+  document.getElementById('content').innerHTML = `
+    <div class="section">
+      <div class="section-header">
+        <h2>Trusted Users</h2>
+        <span class="section-hint">vouch-proxy / forward_auth integration</span>
+      </div>
+      <table>
+        <thead><tr><th>Username</th><th>Role</th><th>Note</th><th>Status</th><th>Created</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="form-row">
+        <div class="field"><label>Username</label><input id="u-username" placeholder="alice@example.com" style="min-width:180px"></div>
+        <div class="field"><label>Role</label><select id="u-role">${roleOpts}</select></div>
+        <div class="field"><label>Note</label><input id="u-note" placeholder="Optional"></div>
+        <button class="btn btn-primary" onclick="addUser()">Add User</button>
+      </div>
+    </div>`;
+}
+
+async function addUser() {
+  const username = document.getElementById('u-username').value.trim();
+  const role     = document.getElementById('u-role').value;
+  const note     = document.getElementById('u-note').value.trim();
+  if (!username) { toast('Username is required', true); return; }
+  try {
+    await api('POST', '/api/users', {username, role, note});
+    toast(`User '${username}' added`);
+    loadUsers();
+  } catch(e) { toast(e.message, true); }
+}
+
+async function deleteUser(username) {
+  if (!confirm(`Remove trusted user '${username}'?`)) return;
+  try {
+    await api('DELETE', `/api/users/${encodeURIComponent(username)}`);
+    toast(`User '${username}' removed`);
+    loadUsers();
+  } catch(e) { toast(e.message, true); }
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+showTab('dashboard');
+</script>
+</body>
+</html>
