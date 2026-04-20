@@ -46,6 +46,7 @@ The created database can be mounted into containers via volume mounts.`,
 	rootCmd.AddCommand(permissionCmd())
 	rootCmd.AddCommand(infoCmd())
 	rootCmd.AddCommand(userCmd())
+	rootCmd.AddCommand(serveCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
