@@ -1,9 +1,8 @@
 # CI workflow for Caddy DuckDB Module
 #
 # Runs on:
-# - Push to main branch
-# - Push to feature/* branches
-# - Pull requests to main
+# - Push to main branch (direct commits / merges)
+# - Pull requests to main (covers feature/* branches — avoids double-run)
 # - Tags starting with 'v' (triggers release)
 #
 # Jobs:
@@ -18,7 +17,6 @@ on:
   push:
     branches:
       - main
-      - 'feature/*'
     tags:
       - 'v*'
   pull_request:
