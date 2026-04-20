@@ -119,9 +119,12 @@ function esc(s) {
 }
 
 // Produce a JS string literal safe inside an HTML onclick="..." attribute.
-// JSON.stringify gives us a quoted, escaped JS string; we then HTML-escape it.
+// JSON.stringify gives us a double-quoted, escaped JS string; we then
+// HTML-escape all four special chars — crucially including " so the double
+// quotes don't break out of the surrounding onclick="..." attribute.
 function jsStr(s) {
-  return JSON.stringify(String(s ?? '')).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return JSON.stringify(String(s ?? ''))
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function check(v) { return v ? '✓' : '·'; }
