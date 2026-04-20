@@ -276,28 +276,54 @@ func (s *apiServer) handleKeys(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// DELETE /api/keys/{key}
+// DELETE /api/keys/{key}   PATCH /api/keys/{key}
 func (s *apiServer) handleKeyByValue(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		writeError(w, 405, "method not allowed")
-		return
-	}
 	key := strings.TrimPrefix(r.URL.Path, "/api/keys/")
 	if key == "" {
 		writeError(w, 400, "key required")
 		return
 	}
-	res, err := s.db.Exec("DELETE FROM api_keys WHERE key = ?", key)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
+	switch r.Method {
+	case http.MethodDelete:
+		res, err := s.db.Exec("DELETE FROM api_keys WHERE key = ?", key)
+		if err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			writeError(w, 404, "key not found")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"deleted": "ok"})
+
+	case http.MethodPatch:
+		var body struct {
+			Note string `json:"note"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, 400, "invalid body")
+			return
+		}
+		var noteVal any
+		if body.Note != "" {
+			noteVal = body.Note
+		}
+		res, err := s.db.Exec("UPDATE api_keys SET note = ? WHERE key = ?", noteVal, key)
+		if err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			writeError(w, 404, "key not found")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"note": body.Note})
+
+	default:
+		writeError(w, 405, "method not allowed")
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		writeError(w, 404, "key not found")
-		return
-	}
-	writeJSON(w, 200, map[string]string{"deleted": "ok"})
 }
 
 // GET /api/permissions?role=x  POST /api/permissions

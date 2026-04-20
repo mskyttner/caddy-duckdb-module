@@ -60,6 +60,9 @@ tr:hover td { background: #fafbfc; }
 .mono { font-family: ui-monospace, monospace; font-size: 0.8rem; }
 
 .key-cell { display: flex; align-items: center; gap: 0.3rem; }
+.note-view { display: flex; align-items: center; gap: 0.3rem; }
+.note-view .btn-icon { opacity: 0; transition: opacity 0.1s; }
+tr:hover .note-view .btn-icon { opacity: 1; }
 .key-val { font-family: ui-monospace, monospace; font-size: 0.78rem; color: #334155; }
 
 .perm-grid { display: flex; gap: 4px; }
@@ -79,10 +82,10 @@ tr:hover td { background: #fafbfc; }
   <h1>Auth DB Manager</h1>
   <nav id="nav">
     <button onclick="showTab('dashboard')" class="active">Dashboard</button>
-    <button onclick="showTab('roles')">Roles</button>
     <button onclick="showTab('keys')">API Keys</button>
-    <button onclick="showTab('permissions')">Permissions</button>
     <button onclick="showTab('users')">Trusted Users</button>
+    <button onclick="showTab('roles')">Roles</button>
+    <button onclick="showTab('permissions')">Permissions</button>
   </nav>
 </header>
 <main id="content"></main>
@@ -90,8 +93,9 @@ tr:hover td { background: #fafbfc; }
 <script>
 'use strict';
 
-const TABS = ['dashboard','roles','keys','permissions','users'];
+const TABS = ['dashboard','keys','users','roles','permissions'];
 let revealedKeys = new Set(); // full key values the user has unmasked
+let editingKey   = null;     // key whose note cell is currently in edit mode
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -226,7 +230,13 @@ async function loadKeys() {
             </div>
           </td>
           <td><span class="badge badge-blue">${esc(k.role)}</span></td>
-          <td>${esc(k.note)}</td>
+          <td data-note-key="${esc(k.key)}">
+            <div class="note-view">
+              <span>${esc(k.note)}</span>
+              <button class="btn btn-ghost btn-sm btn-icon" title="Edit note"
+                onclick="inlineEditNote(${jsStr(k.key)},${jsStr(k.note)})">&#9998;</button>
+            </div>
+          </td>
           <td>${esc(k.created_at)}</td>
           <td>${k.expires_at ? esc(k.expires_at) : '<span style="color:#94a3b8">never</span>'}</td>
           <td><span class="badge ${k.active ? 'badge-green' : 'badge-red'}">${k.active ? 'active' : 'inactive'}</span></td>
@@ -289,6 +299,36 @@ async function deleteKey(key) {
     await api('DELETE', `/api/keys/${encodeURIComponent(key)}`);
     revealedKeys.delete(key);
     toast('Key removed');
+    loadKeys();
+  } catch(e) { toast(e.message, true); }
+}
+
+function inlineEditNote(key, currentNote) {
+  editingKey = key;
+  const cell = [...document.querySelectorAll('[data-note-key]')]
+    .find(el => el.dataset.noteKey === key);
+  if (!cell) return;
+  cell.innerHTML = `
+    <div style="display:flex;gap:4px;align-items:center">
+      <input id="note-edit" type="text" value="${esc(currentNote)}"
+        style="padding:3px 6px;border:1px solid #2563eb;border-radius:4px;font-size:0.78rem;flex:1;min-width:140px"
+        onkeydown="if(event.key==='Enter')saveNote();if(event.key==='Escape')loadKeys()">
+      <button class="btn btn-primary btn-sm" onclick="saveNote()">&#10003;</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadKeys()">&#10007;</button>
+    </div>`;
+  const input = document.getElementById('note-edit');
+  input.focus();
+  input.select();
+}
+
+async function saveNote() {
+  const key  = editingKey;
+  const note = document.getElementById('note-edit')?.value ?? '';
+  if (!key) return;
+  try {
+    await api('PATCH', `/api/keys/${encodeURIComponent(key)}`, {note});
+    toast('Note updated');
+    editingKey = null;
     loadKeys();
   } catch(e) { toast(e.message, true); }
 }
