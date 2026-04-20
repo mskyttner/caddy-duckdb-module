@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ func runServe(port int) error {
 	mux.Handle("/", http.FileServer(http.FS(uiFS)))
 
 	// JSON API
+	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/info", s.handleInfo)
 	mux.HandleFunc("/api/roles", s.handleRoles)
 	mux.HandleFunc("/api/roles/", s.handleRoleByName)
@@ -76,6 +78,46 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// GET /api/download — export current DB to a portable snapshot and stream it
+func (s *apiServer) handleDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Step 1: export schema + CSV data into a temp directory
+	exportDir, err := os.MkdirTemp("", "auth-export-*")
+	if err != nil {
+		writeError(w, 500, "failed to create temp dir: "+err.Error())
+		return
+	}
+	defer os.RemoveAll(exportDir)
+
+	if _, err := s.db.Exec(fmt.Sprintf("EXPORT DATABASE '%s'", exportDir)); err != nil {
+		writeError(w, 500, "export failed: "+err.Error())
+		return
+	}
+
+	// Step 2: import into a fresh DuckDB file (unlocked, portable)
+	outPath := exportDir + "/auth.db"
+	freshDB, err := sql.Open("duckdb", outPath)
+	if err != nil {
+		writeError(w, 500, "failed to open export db: "+err.Error())
+		return
+	}
+	_, importErr := freshDB.Exec(fmt.Sprintf("IMPORT DATABASE '%s'", exportDir))
+	freshDB.Close()
+	if importErr != nil {
+		writeError(w, 500, "import failed: "+importErr.Error())
+		return
+	}
+
+	// Step 3: stream the file to the browser as a download
+	w.Header().Set("Content-Disposition", `attachment; filename="auth.db"`)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeFile(w, r, outPath)
 }
 
 // GET /api/info

@@ -9,6 +9,8 @@
 body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #1e293b; font-size: 14px; }
 
 header { background: #1e293b; color: #fff; padding: 0 1.5rem; display: flex; align-items: center; gap: 2rem; height: 52px; }
+.dl-btn { margin-left: auto; background: #16a34a; color: #fff; border: none; padding: 0.3rem 0.8rem; border-radius: 5px; font-size: 0.78rem; font-weight: 500; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+.dl-btn:hover { background: #15803d; }
 header h1 { font-size: 0.95rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
 nav { display: flex; gap: 0.2rem; }
 nav button { background: transparent; color: #94a3b8; border: none; padding: 0.35rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.82rem; transition: all 0.15s; }
@@ -87,6 +89,7 @@ tr:hover .note-view .btn-icon { opacity: 1; }
     <button onclick="showTab('roles')">Roles</button>
     <button onclick="showTab('permissions')">Permissions</button>
   </nav>
+  <a href="/api/download" class="dl-btn">&#11123; Download auth.db</a>
 </header>
 <main id="content"></main>
 
