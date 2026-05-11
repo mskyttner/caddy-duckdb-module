@@ -30,6 +30,35 @@ INSERT OR IGNORE INTO users VALUES (1, 'picard');
 INSERT OR REPLACE INTO users VALUES (1, 'picard');
 ```
 
+### MERGE INTO — Upsert Without a Primary Key
+```sql
+MERGE INTO people
+    USING (SELECT 3 AS id, 'Sarah' AS name, 95_000.0 AS salary) AS src
+    ON (src.id = people.id)
+    WHEN MATCHED THEN UPDATE SET salary = src.salary
+    WHEN NOT MATCHED THEN INSERT;
+```
+Alternative to `INSERT OR REPLACE` when the target has no primary key — match condition is arbitrary SQL.
+
+```sql
+-- Multiple clauses: conditional update, delete, insert; RETURNING shows what happened
+MERGE INTO people
+    USING src USING (id)
+    WHEN MATCHED AND people.salary < 100_000.0 THEN UPDATE SET salary = src.salary
+    WHEN MATCHED AND people.salary >= 100_000.0 THEN DELETE
+    WHEN NOT MATCHED THEN INSERT BY NAME
+    RETURNING merge_action, *;
+```
+
+```sql
+-- Delete rows absent from the source (full sync pattern)
+MERGE INTO target
+    USING source USING (id)
+    WHEN MATCHED THEN UPDATE
+    WHEN NOT MATCHED BY SOURCE THEN DELETE;
+```
+`WHEN NOT MATCHED BY SOURCE` deletes rows in the target that have no matching row in the source — useful for keeping target in sync with source.
+
 ### DESCRIBE / SUMMARIZE
 ```sql
 DESCRIBE my_table;
@@ -50,45 +79,45 @@ Start with `FROM` instead of `SELECT` — matches logical execution order.
 
 ### GROUP BY ALL
 ```sql
-SELECT region, product, sum(sales) FROM sales GROUP BY ALL;
+FROM sales SELECT region, product, sum(sales) GROUP BY ALL;
 ```
 Groups by all non-aggregated columns automatically. No need to repeat column names.
 
 ### ORDER BY ALL
 ```sql
-SELECT age, sum(score) FROM t GROUP BY ALL ORDER BY ALL;
+FROM t SELECT age, sum(score) GROUP BY ALL ORDER BY ALL;
 ```
 Orders by all selected columns left to right. `ORDER BY ALL DESC` reverses.
 
 ### SELECT * EXCLUDE
 ```sql
-SELECT * EXCLUDE (col1, col2) FROM my_table;
+FROM my_table SELECT * EXCLUDE (col1, col2);
 ```
 All columns except the listed ones.
 
 ### SELECT * REPLACE
 ```sql
-SELECT * REPLACE (price * 1.2 AS price) FROM products;
+FROM products SELECT * REPLACE (price * 1.2 AS price);
 ```
 All columns, with named columns overridden by expressions.
 
 ### UNION BY NAME
 ```sql
-SELECT a, b FROM t1
+FROM t1 SELECT a, b
 UNION ALL BY NAME
-SELECT b, c FROM t2;
+FROM t2 SELECT b, c;
 ```
 Combines results matching columns by name rather than position. Missing columns become NULL.
 
 ### Prefix Aliases (colon syntax)
 ```sql
-SELECT total: sum(amount) FROM orders;
+FROM orders SELECT total: sum(amount);
 -- equivalent to: SELECT sum(amount) AS total FROM orders
 ```
 
 ### Column Aliases in WHERE / GROUP BY / HAVING
 ```sql
-SELECT price * 0.9 AS discounted FROM products WHERE discounted < 50;
+FROM products SELECT price * 0.9 AS discounted WHERE discounted < 50;
 ```
 Use aliases defined in SELECT directly in other clauses — no subquery needed.
 
@@ -103,7 +132,7 @@ Later columns in SELECT can reference earlier aliases in the same statement.
 
 ### Trailing Commas
 ```sql
-SELECT col1, col2, FROM t GROUP BY col1, col2,;
+FROM t SELECT col1, col2, GROUP BY col1, col2,;
 ```
 Trailing commas are valid — makes commenting out columns easier.
 
@@ -129,25 +158,52 @@ Wide → long: column names become row values.
 
 ### COLUMNS() with Regex
 ```sql
-SELECT id, COLUMNS('.*_count') FROM stats;
+FROM stats SELECT id, COLUMNS('.*_count');
 ```
 Selects all columns whose name matches the regex.
 
 ### COLUMNS() with Lambda
 ```sql
-SELECT COLUMNS(col -> col LIKE '%amount%') FROM orders;
+FROM orders SELECT COLUMNS(col -> col LIKE '%amount%');
 ```
 Selects columns where the lambda returns true.
 
 ### COLUMNS() with EXCLUDE / REPLACE
 ```sql
-SELECT max(COLUMNS(* EXCLUDE id)) FROM t;
-SELECT max(COLUMNS(* REPLACE ts::DATE AS ts)) FROM events;
+FROM t SELECT max(COLUMNS(* EXCLUDE id));
+FROM events SELECT max(COLUMNS(* REPLACE ts::DATE AS ts));
 ```
+
+### COLUMNS() with Regex Rename (capture groups)
+```sql
+-- Strip a common prefix using capture groups in the regex
+FROM financial_data SELECT id, COLUMNS('(adjusted_)(.*)') AS '\2';
+-- adjusted_revenue → revenue, adjusted_profit → profit
+-- columns not matching the regex are dropped
+
+-- Rename with a suffix instead
+FROM prices SELECT COLUMNS('(.*)(_usd)') AS '\1';
+-- amount_usd → amount, cost_usd → cost
+```
+`\1`–`\9` refer to capture groups in the regex. Only columns matching the full pattern are included; non-matching columns must be selected separately.
+
+### *COLUMNS() — Splat as Named Function Arguments
+```sql
+-- Pack all non-id columns into a struct (field names preserved)
+FROM t SELECT id, struct_pack(*COLUMNS(* EXCLUDE id)) AS metrics;
+
+-- Combine with regex rename: strip prefix then fold into struct
+WITH renamed AS (
+    FROM financial_data SELECT id, COLUMNS('(adjusted_)(.*)') AS '\2'
+)
+FROM renamed SELECT id, struct_pack(*COLUMNS(renamed.* EXCLUDE id)) AS metrics;
+-- result: id=1, metrics={'revenue': 100.5, 'profit': 20.1}
+```
+The `*` prefix splats the selected columns as *named arguments* into the function — equivalent to writing `struct_pack(revenue := revenue, profit := profit)` by hand. Works with any variadic function that accepts named arguments (`struct_pack`, `row`, etc.).
 
 ### STRUCT.* Expansion
 ```sql
-SELECT address.* FROM customers;
+FROM customers SELECT address.*;
 ```
 Expands a struct column into individual columns.
 
@@ -162,31 +218,30 @@ FROM orders SELECT orders;  -- each row becomes a struct
 
 ### FILTER Clause
 ```sql
-SELECT
+FROM users SELECT
     count(*) AS total,
-    count(*) FILTER (WHERE status = 'active') AS active_count
-FROM users;
+    count(*) FILTER (WHERE status = 'active') AS active_count;
 ```
 Per-aggregate filtering without affecting other aggregates.
 
 ### GROUPING SETS / CUBE / ROLLUP
 ```sql
-SELECT region, product, sum(sales)
 FROM sales
+SELECT region, product, sum(sales)
 GROUP BY GROUPING SETS ((region), (product), (region, product), ());
 ```
 Multiple aggregation levels in one query. `()` is the grand total.
 
 ### Top-N Per Group
 ```sql
-SELECT grp, max(val, 3) FROM t GROUP BY grp;
+FROM t SELECT grp, max(val, 3) GROUP BY grp;
 -- returns an array of the top 3 values per group
 ```
 Also: `min(arg, n)`, `arg_max(arg, val, n)`, `max_by(arg, val, n)`.
 
 ### count() Shorthand
 ```sql
-SELECT count() FROM t;  -- same as count(*)
+FROM t SELECT count();  -- same as count(*)
 ```
 
 ---
@@ -202,7 +257,7 @@ SELECT items[2:3] AS slice;     -- 1-based, inclusive
 ### Struct Literals
 ```sql
 SELECT {name: 'Alice', age: 30} AS person;
-SELECT person.name FROM ...;
+FROM t SELECT person.name;
 ```
 
 ### Lambda Functions
@@ -219,7 +274,7 @@ SELECT list_reduce([1,2,3,4], (acc, x) -> acc + x);
 
 ### List Comprehensions
 ```sql
-SELECT [x * 2 FOR x IN values IF x > 0] FROM t;
+FROM t SELECT [x * 2 FOR x IN values IF x > 0];
 ```
 
 ---
@@ -251,7 +306,7 @@ Any function can be called as `value.function(remaining_args)`.
 
 ### ASOF JOIN
 ```sql
-SELECT * FROM trades ASOF JOIN quotes
+FROM trades ASOF JOIN quotes
 ON trades.ticker = quotes.ticker AND trades.ts >= quotes.ts;
 ```
 For each row in `trades`, finds the latest matching row in `quotes` where `quotes.ts <= trades.ts`. Essential for time-series alignment.
@@ -269,7 +324,7 @@ Subquery can reference columns from the preceding table.
 
 ### POSITIONAL JOIN
 ```sql
-SELECT * FROM t1 POSITIONAL JOIN t2;
+FROM t1 POSITIONAL JOIN t2;
 ```
 Joins row 1 with row 1, row 2 with row 2, etc.
 
@@ -279,24 +334,24 @@ Joins row 1 with row 1, row 2 with row 2, etc.
 
 ### Direct File Queries
 ```sql
-SELECT * FROM 'data.parquet';
-SELECT * FROM 'data.csv';
-SELECT * FROM 'data/*.parquet';          -- glob pattern
-SELECT * FROM read_parquet(['a.parquet', 'b.parquet'], union_by_name=true);
+FROM 'data.parquet';
+FROM 'data.csv';
+FROM 'data/*.parquet';          -- glob pattern
+FROM read_parquet(['a.parquet', 'b.parquet'], union_by_name=true);
 ```
 No import step needed — query files directly. Schema is auto-detected.
 
 ### Cache Remote or Large Files
 When querying a large or remote file multiple times, cache it first:
 ```sql
-CREATE TABLE cached AS SELECT * FROM 'large_file.parquet';
+CREATE TABLE cached AS FROM 'large_file.parquet';
 -- then query cached instead
-SELECT * FROM cached WHERE ...;
+FROM cached WHERE ...;
 ```
 
 ### Multiple Files with Different Schemas
 ```sql
-SELECT * FROM read_parquet('parts/*.parquet', union_by_name=true);
+FROM read_parquet('parts/*.parquet', union_by_name=true);
 ```
 `union_by_name=true` aligns columns by name rather than position when schemas differ.
 
@@ -313,7 +368,7 @@ SELECT CAST('2024-06-11' AS DATE);
 
 -- timestamp → date (truncate time component)
 SELECT now()::DATE;
-SELECT my_timestamp_col::DATE FROM t;
+FROM t SELECT my_timestamp_col::DATE;
 ```
 
 ### Date arithmetic
@@ -357,8 +412,7 @@ SELECT age(current_date, '2001-12-20'::DATE);                  -- interval value
 SELECT age(current_date, '2001-12-20'::DATE)::VARCHAR;         -- e.g. "24 years 2 months 29 days"
 
 -- span of a date column in a table
-SELECT age(MAX(publication_date)::DATE, MIN(publication_date)::DATE)::VARCHAR AS span
-FROM works;
+FROM works SELECT age(MAX(publication_date)::DATE, MIN(publication_date)::DATE)::VARCHAR AS span;
 ```
 
 ### EXTRACT and date_part — get individual components
@@ -385,8 +439,8 @@ SELECT date_trunc('quarter', my_date);
 SELECT date_trunc('decade',  my_date);
 
 -- typical time-series aggregation pattern
-SELECT date_trunc('year', publication_date) AS year, COUNT(*) AS n
 FROM works
+SELECT date_trunc('year', publication_date) AS year, COUNT(*) AS n
 GROUP BY ALL
 ORDER BY year;
 ```
@@ -403,7 +457,7 @@ SELECT strptime('2024-06-11 17:20:06', '%Y-%m-%d %H:%M:%S');
 SELECT strptime('June 11 2024', '%B %d %Y');
 
 -- TRY_STRPTIME returns NULL instead of error on bad input
-SELECT TRY_STRPTIME(my_varchar_date, '%Y-%m-%d') FROM t;
+FROM t SELECT TRY_STRPTIME(my_varchar_date, '%Y-%m-%d');
 ```
 
 ### last_day, dayname, monthname
@@ -416,15 +470,14 @@ SELECT monthname('2024-06-11'::DATE);        -- 'June'
 ### Outlier and quality filters
 ```sql
 -- filter out garbage dates (year 1000, far-future pre-prints etc.)
-SELECT * FROM works
+FROM works
 WHERE publication_date BETWEEN '1900-01-01' AND (current_date + INTERVAL '2 years');
 
 -- count outliers only
-SELECT COUNT(*) FILTER (
+FROM works SELECT COUNT(*) FILTER (
     EXTRACT('year' FROM publication_date) < 1900
     OR EXTRACT('year' FROM publication_date) > EXTRACT('year' FROM current_date) + 2
-) AS outliers
-FROM works;
+) AS outliers;
 ```
 
 ### generate_series for date sequences
@@ -442,9 +495,9 @@ WITH months AS (
         '2020-01-01'::TIMESTAMP, now(), INTERVAL '1 month'
     ))::DATE AS month
 )
-SELECT months.month, COALESCE(COUNT(w.publication_date), 0) AS n
 FROM months
 LEFT JOIN works w ON date_trunc('month', w.publication_date) = months.month
+SELECT months.month, COALESCE(COUNT(w.publication_date), 0) AS n
 GROUP BY ALL ORDER BY month;
 ```
 
@@ -463,7 +516,7 @@ SELECT today();            -- alias for current_date
 ### Case Insensitivity with Preservation
 ```sql
 CREATE TABLE t AS SELECT 1 AS "MyColumn";
-SELECT mycolumn FROM t;  -- works; displays as MyColumn
+FROM t SELECT mycolumn;  -- works; displays as MyColumn
 ```
 
 ### Auto-renamed Duplicate Columns
@@ -471,7 +524,7 @@ In joins producing two columns with the same name, DuckDB automatically appends 
 
 ### Automatic JSON Parsing
 ```sql
-SELECT data[0].name FROM 'records.json';
+FROM 'records.json' SELECT data[0].name;
 ```
 JSON arrays and objects are parsed into DuckDB lists and structs automatically.
 
@@ -482,3 +535,184 @@ DuckDB casts between compatible types automatically in comparisons and joins —
 ```sql
 SELECT 1_000_000 AS one_million;
 ```
+
+### Identifiers vs Literals
+- Double quotes (`"`) for identifiers with spaces, special characters, or case-sensitivity: `"My Column"`
+- Single quotes (`'`) for string literals: `'hello world'`
+
+---
+
+## Window Functions
+
+### QUALIFY — Filter on Window Results
+```sql
+-- Top 2 products by sales in each category
+FROM products
+SELECT category, product_name, sales_amount
+QUALIFY ROW_NUMBER() OVER (PARTITION BY category ORDER BY sales_amount DESC) <= 2;
+```
+`QUALIFY` filters rows after window functions are evaluated — no subquery needed.
+Also works with `RANK()`, `DENSE_RANK()`, `LAG()`, `LEAD()`, etc.
+
+```sql
+-- Keep only the latest row per group
+FROM events
+QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY ts DESC) = 1;
+```
+
+---
+
+## Latest-per-Group Aggregation
+
+### arg_max / arg_min
+```sql
+-- Get the name of the highest-paid employee per department
+FROM employees SELECT department, arg_max(name, salary) AS top_earner GROUP BY department;
+
+-- Get the value of another column at the row with the maximum date
+FROM events SELECT id, arg_max(status, updated_at) AS latest_status GROUP BY id;
+```
+`arg_max(arg, val)` returns the value of `arg` at the row where `val` is maximum.
+`arg_min(arg, val)` returns the value of `arg` at the row where `val` is minimum.
+
+---
+
+## JSON
+
+### Arrow Operators
+```sql
+SELECT data->>'name'           -- returns TEXT (unquoted)
+SELECT data->'user'->'id'      -- returns JSON (nested path)
+SELECT data->>'$.user.id'      -- JSONPath syntax, returns TEXT
+```
+Use `->>'key'` when you want a plain string; use `->'key'` to keep it as JSON for further extraction.
+
+### JSON Array Access
+```sql
+SELECT json_col->>0             -- first element as text
+SELECT json_extract_string(json_col, '$.items[0].name')
+```
+
+---
+
+## Schema Exploration
+
+```sql
+-- List all attached databases
+FROM duckdb_databases() SELECT database_name, type, path, is_read_only;
+
+-- List tables in a specific database
+FROM information_schema.tables
+SELECT schema_name, table_name, table_type
+WHERE table_catalog = 'my_db';
+
+-- Equivalent using catalog function
+FROM duckdb_tables()
+SELECT database_name, schema_name, table_name
+WHERE database_name = 'my_db';
+
+-- Get column details
+FROM duckdb_columns()
+SELECT column_name, data_type, is_nullable
+WHERE database_name = 'my_db' AND table_name = 'my_table';
+
+-- Column statistics
+SUMMARIZE my_table;
+```
+
+---
+
+## Persisting In-Memory Data to File
+
+```sql
+-- Attach a new file-based database
+ATTACH '/path/to/output.db' AS output;
+
+-- Copy everything from the in-memory default database into it
+COPY FROM DATABASE memory TO output;
+
+-- Detach when done
+DETACH output;
+```
+Useful when you have built up tables in `:memory:` and want to save them before the session ends.
+
+---
+
+## Complex Types — MAP
+
+```sql
+-- Map literal
+SELECT MAP(['a','b'], [1, 2]) AS m;
+
+-- Access by key
+FROM (SELECT MAP(['a','b'], [1, 2]) AS m) SELECT m['a'];
+
+-- element_at (null-safe)
+FROM t SELECT element_at(m, 'missing_key');
+```
+
+---
+
+## SQL Quirks and Gotchas
+
+Behaviours that differ from other SQL dialects or produce surprising results.
+
+### Exponentiation Operator Precedence
+```sql
+SELECT -2^2;    -- returns 4.0, NOT -4.0
+```
+Unary minus has higher precedence than `^`, so `-2^2` is `(-2)^2 = 4`. Use `-(2^2)` or `pow(2, 2)` to get `-4`.
+
+### NULL in IN vs. IN-List
+```sql
+SELECT 1 IN (0, NULL);     -- NULL  (UNKNOWN — standard SQL behaviour)
+SELECT 1 IN [0, NULL];     -- false (list membership, not SQL IN)
+```
+`IN (...)` follows SQL three-valued logic; `IN [...]` tests list membership and treats NULL as a value.
+
+### String Concatenation and NULL
+```sql
+SELECT concat('abc', NULL);  -- 'abc'   (NULL is ignored)
+SELECT 'abc' || NULL;        -- NULL    (NULL propagates with ||)
+```
+Use `concat()` when NULL inputs should be silently skipped; use `||` when NULL should poison the result.
+
+### Indexing: 1-Based vs. 0-Based
+- **Lists, strings, window functions** (`row_number`, `rank`): **1-based**
+- **JSON** (`->`, `->>`, `json_extract`): **0-based**
+
+```sql
+SELECT ['a','b','c'][1];          -- 'a'  (1-based)
+SELECT '["a","b","c"]'::JSON->>0; -- 'a'  (0-based)
+```
+
+### USING SAMPLE Placement vs. Execution Order
+```sql
+FROM t WHERE col > 0 USING SAMPLE 10%;
+```
+`USING SAMPLE` is written after `WHERE`/`GROUP BY` but is applied *before* them — it samples the raw table, not the filtered result. To sample after filtering, wrap in a subquery:
+```sql
+FROM (FROM t WHERE col > 0) USING SAMPLE 10%;
+```
+
+### Column Deduplication in SELECT
+```sql
+CREATE TABLE tbl AS SELECT 1 AS a;
+FROM (FROM tbl SELECT *, 2 AS a) SELECT a;  -- returns 1, not 2
+```
+When the same column name appears multiple times in a SELECT, the **first** occurrence wins and later ones are silently dropped.
+
+### age() Uses current_date, Not current_timestamp
+```sql
+SELECT age('2000-01-01'::DATE);  -- current_date - date, returns an interval
+```
+`age(x)` computes `current_date - x`, not `current_timestamp - x`. The time-of-day component is never included.
+
+### Implicit Type Coercions Worth Knowing
+```sql
+SELECT 1 = '1';    -- true  (string cast to integer)
+SELECT 1 = ' 01 '; -- true  (whitespace and leading zeros stripped)
+SELECT 1 = true;   -- true  (boolean cast to integer)
+SELECT 't' = true; -- true  (PostgreSQL compatibility)
+```
+DuckDB aggressively casts across types in equality comparisons. Be explicit with `CAST` or `::` when exact type matching matters.
