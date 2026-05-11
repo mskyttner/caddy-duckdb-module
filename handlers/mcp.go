@@ -56,10 +56,65 @@ func NewMCPHandler(
 		maxRows = 500
 	}
 
+	const serverInstructions = `Execute SQL queries against DuckDB using DuckDB SQL syntax.
+
+## Name Qualification
+Format: ` + "`database.schema.table`" + ` — default schema is ` + "`main`" + ` so ` + "`db.table`" + ` = ` + "`db.main.table`" + `.
+Use double quotes for identifiers with spaces/special chars; single quotes for string literals.
+
+## Key Syntax Reminders
+- Start queries with FROM: ` + "`FROM t WHERE ...`" + ` (equivalent to ` + "`SELECT * FROM t WHERE ...`" + `)
+- ` + "`GROUP BY ALL`" + ` — groups by all non-aggregated columns automatically
+- ` + "`SELECT * EXCLUDE (col)`" + ` / ` + "`SELECT * REPLACE (expr AS col)`" + `
+- ` + "`UNION ALL BY NAME`" + ` — matches columns by name, not position
+
+## Window Functions
+Use ` + "`QUALIFY`" + ` to filter on window results without a subquery:
+` + "```sql" + `
+-- latest row per group
+SELECT * FROM events
+QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY ts DESC) = 1;
+` + "```" + `
+
+## Latest-per-Group Pattern
+` + "```sql" + `
+SELECT id, arg_max(status, updated_at) AS latest_status FROM events GROUP BY id;
+` + "```" + `
+` + "`arg_max(arg, val)`" + ` returns the value of ` + "`arg`" + ` at the row where ` + "`val`" + ` is maximum.
+
+## Schema Exploration
+` + "```sql" + `
+SELECT database_name, type, is_read_only FROM duckdb_databases();
+SELECT database_name, schema_name, table_name FROM duckdb_tables() WHERE database_name = 'my_db';
+SELECT column_name, data_type FROM duckdb_columns() WHERE table_name = 'my_table';
+SUMMARIZE my_table;  -- per-column statistics
+` + "```" + `
+
+## Special Joins
+- ` + "`ASOF JOIN`" + ` — for each left row finds latest right row where ` + "`right.ts <= left.ts`" + `
+- ` + "`LATERAL`" + ` — subquery can reference columns from the preceding table
+
+## Direct File Queries
+` + "```sql" + `
+SELECT * FROM 'data.parquet';
+SELECT * FROM read_parquet('parts/*.parquet', union_by_name=true);
+` + "```" + `
+
+## Query Best Practices
+- **Filter early**: apply predicates inside CTEs before joins, not after — reduces data volume for all downstream steps
+- **Use CTEs** to break multi-step queries into named, readable stages; use ` + "`CREATE TABLE AS SELECT`" + ` (CTAS) to materialize a CTE when it is referenced more than once
+- **Join order**: put the smallest or most selective table on the left side of a join chain — DuckDB uses the left side as the probe side for hash joins
+- **Avoid ` + "`ORDER BY`" + ` on intermediate results** — sort only in the final output or when required by a window function
+- **Project only needed columns** — never ` + "`SELECT *`" + ` from large parquet files; name the columns you need so row-group pruning can skip irrelevant data
+
+For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resource.`
+
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "caddy-duckdb",
 		Version: "1.0.0",
-	}, nil)
+	}, &mcp.ServerOptions{
+		Instructions: serverInstructions,
+	})
 
 	resources := registerDocResources(srv, docsDir)
 	registerHelpTool(srv)
@@ -197,12 +252,32 @@ func NewMCPHandler(
 		},
 	)
 
+	// --- list_databases ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "list_databases",
+			Description: "List all attached databases (catalogs). Useful when multiple DuckDB databases are attached via ATTACH or configured via init SQL.",
+			InputSchema: buildSchema(),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			return runQueryTool(dbMgr, `
+				SELECT database_name, type, path, is_attached, is_read_only
+				FROM duckdb_databases()
+				ORDER BY database_name
+			`, 200)
+		},
+	)
+
 	// --- list_tables ---
 	srv.AddTool(
 		&mcp.Tool{
 			Name:        "list_tables",
 			Description: "List tables (and optionally views) in the database with column counts.",
 			InputSchema: buildSchema(
+				strProp("database", "Database (catalog) name to filter by", false),
 				strProp("schema", "Schema name to filter by (default: main)", false),
 				strProp("include_views", "Include views: 'true' or 'false' (default: false)", false),
 			),
@@ -212,18 +287,24 @@ func NewMCPHandler(
 				return res, nil
 			}
 			schema := argString(req, "schema", "main")
+			database := argString(req, "database", "")
 			tableTypes := "'BASE TABLE'"
 			if argString(req, "include_views", "false") == "true" {
 				tableTypes = "'BASE TABLE','VIEW'"
 			}
+			dbFilter := ""
+			if database != "" && isSimpleIdentifier(database) {
+				dbFilter = fmt.Sprintf("AND t.table_catalog = '%s'", database)
+			}
 			sql := fmt.Sprintf(`
-				SELECT t.table_name, t.table_type,
+				SELECT t.table_catalog, t.table_schema, t.table_name, t.table_type,
 				       (SELECT COUNT(*) FROM information_schema.columns c
-				        WHERE c.table_name = t.table_name AND c.table_schema = t.table_schema) AS column_count
+				        WHERE c.table_name = t.table_name AND c.table_schema = t.table_schema
+				          AND c.table_catalog = t.table_catalog) AS column_count
 				FROM information_schema.tables t
-				WHERE t.table_schema = '%s' AND t.table_type IN (%s)
-				ORDER BY t.table_name
-			`, schema, tableTypes)
+				WHERE t.table_schema = '%s' %s AND t.table_type IN (%s)
+				ORDER BY t.table_catalog, t.table_name
+			`, schema, dbFilter, tableTypes)
 			return runQueryTool(dbMgr, sql, 2000)
 		},
 	)
@@ -232,9 +313,11 @@ func NewMCPHandler(
 	srv.AddTool(
 		&mcp.Tool{
 			Name:        "describe",
-			Description: "Get the column schema for a table or view.",
+			Description: "Get the column schema for a table or view. Optionally qualify with database and schema for multi-catalog setups.",
 			InputSchema: buildSchema(
 				strProp("table", "Table or view name", true),
+				strProp("database", "Database (catalog) name, e.g. 'diva' or 'main'", false),
+				strProp("schema", "Schema name (default: main)", false),
 			),
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -245,7 +328,16 @@ func NewMCPHandler(
 			if table == "" || !isSimpleIdentifier(table) {
 				return textResult("Error: valid table name is required"), nil
 			}
-			return runQueryTool(dbMgr, "DESCRIBE "+table, 500)
+			database := argString(req, "database", "")
+			schema := argString(req, "schema", "")
+			target := table
+			if schema != "" && isSimpleIdentifier(schema) {
+				target = schema + "." + target
+			}
+			if database != "" && isSimpleIdentifier(database) {
+				target = database + "." + target
+			}
+			return runQueryTool(dbMgr, "DESCRIBE "+target, 500)
 		},
 	)
 
@@ -1375,7 +1467,7 @@ func isSimpleIdentifier(s string) bool {
 // User macro names that conflict are skipped.
 var builtinMCPToolNames = map[string]bool{
 	"query": true, "execute": true, "export": true,
-	"list_tables": true, "describe": true, "database_info": true,
+	"list_databases": true, "list_tables": true, "describe": true, "database_info": true,
 	"summarize": true, "schema": true, "value_counts": true, "sample": true,
 	"column_search": true, "row_counts": true, "sample_by_id_range": true,
 	"server_status": true,
