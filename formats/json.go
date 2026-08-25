@@ -94,7 +94,10 @@ func WriteJSONToWriter(w io.Writer, rows *sql.Rows) (int64, error) {
 }
 
 // WriteJSON writes query results as JSON with pagination.
-func WriteJSON(w http.ResponseWriter, rows *sql.Rows, page, limit int, totalRows int64, paginationRequested bool, safetyLimit int, linksConfig *LinksConfig) error {
+// sqlEcho, when non-empty, is included as response["meta"]["sql"] — the
+// literal SQL equivalent of the request's filter=/sort=/group_by= params,
+// mirroring OpenAlex OQL's meta.x_query response echo.
+func WriteJSON(w http.ResponseWriter, rows *sql.Rows, page, limit int, totalRows int64, paginationRequested bool, safetyLimit int, linksConfig *LinksConfig, sqlEcho string) error {
 	// Get column names
 	columns, err := rows.Columns()
 	if err != nil {
@@ -136,6 +139,10 @@ func WriteJSON(w http.ResponseWriter, rows *sql.Rows, page, limit int, totalRows
 	// Build response
 	response := map[string]interface{}{
 		"data": data,
+	}
+
+	if sqlEcho != "" {
+		response["meta"] = map[string]interface{}{"sql": sqlEcho}
 	}
 
 	// Add pagination metadata if requested
@@ -428,9 +435,14 @@ func WriteJSONWithCursor(w http.ResponseWriter, rows *sql.Rows, limit int, sortC
 }
 
 // WriteGroupByJSON writes group by results as JSON.
-func WriteGroupByJSON(w http.ResponseWriter, results []GroupByResult) error {
+// sqlEcho, when non-empty, is included as response["meta"]["sql"] — see WriteJSON.
+func WriteGroupByJSON(w http.ResponseWriter, results []GroupByResult, sqlEcho string) error {
 	response := map[string]interface{}{
 		"group_by": results,
+	}
+
+	if sqlEcho != "" {
+		response["meta"] = map[string]interface{}{"sql": sqlEcho}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -775,6 +775,112 @@ func (s Sort) ToSQL() string {
 	return fmt.Sprintf("%s %s", s.Column, dir)
 }
 
+// toLiteralSQL renders the filter with its value inlined as a SQL literal,
+// for the read-only `meta.sql` echo returned alongside REST responses.
+// Never used to build a query that is actually executed against the
+// database — execution always goes through ToSQL's parameter binding.
+func (f Filter) toLiteralSQL() string {
+	lit := sqlLiteral(f.Value)
+	switch f.Operator {
+	case "eq":
+		return fmt.Sprintf("%s = %s", f.Column, lit)
+	case "ne":
+		return fmt.Sprintf("%s != %s", f.Column, lit)
+	case "gt":
+		return fmt.Sprintf("%s > %s", f.Column, lit)
+	case "gte":
+		return fmt.Sprintf("%s >= %s", f.Column, lit)
+	case "lt":
+		return fmt.Sprintf("%s < %s", f.Column, lit)
+	case "lte":
+		return fmt.Sprintf("%s <= %s", f.Column, lit)
+	case "like":
+		return fmt.Sprintf("%s LIKE %s", f.Column, lit)
+	case "in":
+		return fmt.Sprintf("%s IN %s", f.Column, lit)
+	default:
+		return fmt.Sprintf("%s = %s", f.Column, lit)
+	}
+}
+
+// sqlLiteral formats a Go value as a SQL literal for display purposes only.
+func sqlLiteral(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return "'" + strings.ReplaceAll(val, "'", "''") + "'"
+	case []string:
+		parts := make([]string, len(val))
+		for i, s := range val {
+			parts[i] = sqlLiteral(s)
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
+	case []interface{}:
+		parts := make([]string, len(val))
+		for i, s := range val {
+			parts[i] = sqlLiteral(s)
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
+	default:
+		return fmt.Sprintf("%v", val)
+	}
+}
+
+// RenderSelectSQL returns the literal SQL statement equivalent to a Select()
+// call, for the `meta.sql` echo on list/filter/sort responses (mirrors the
+// query built by Select — keep the two in sync).
+func RenderSelectSQL(table string, columns []string, filters []Filter, sorts []Sort, limit, offset int) string {
+	columnList := "*"
+	if len(columns) > 0 {
+		columnList = strings.Join(columns, ", ")
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s", columnList, table)
+
+	if len(filters) > 0 {
+		whereClauses := make([]string, len(filters))
+		for i, f := range filters {
+			whereClauses[i] = f.toLiteralSQL()
+		}
+		query += " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	if len(sorts) > 0 {
+		sortClauses := make([]string, len(sorts))
+		for i, s := range sorts {
+			sortClauses[i] = s.ToSQL()
+		}
+		query += " ORDER BY " + strings.Join(sortClauses, ", ")
+	}
+
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	if offset > 0 {
+		query += fmt.Sprintf(" OFFSET %d", offset)
+	}
+
+	return query
+}
+
+// RenderGroupBySQL returns the literal SQL statement equivalent to a
+// SelectGroupBy() call, for the `meta.sql` echo on group_by responses
+// (mirrors the query built by SelectGroupBy — keep the two in sync).
+func RenderGroupBySQL(table, groupByCol string, filters []Filter) string {
+	query := fmt.Sprintf("SELECT %s, COUNT(*) as count FROM %s", groupByCol, table)
+
+	if len(filters) > 0 {
+		whereClauses := make([]string, len(filters))
+		for i, f := range filters {
+			whereClauses[i] = f.toLiteralSQL()
+		}
+		query += " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	query += fmt.Sprintf(" GROUP BY %s ORDER BY count DESC", groupByCol)
+
+	return query
+}
+
 // MacroInfo represents information about a table macro.
 type MacroInfo struct {
 	Name       string   `json:"name"`

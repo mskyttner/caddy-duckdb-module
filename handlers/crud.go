@@ -316,8 +316,14 @@ func (h *CRUDHandler) handleRead(w http.ResponseWriter, r *http.Request, tableNa
 		}
 	}
 
+	// Echo the equivalent SQL when requested
+	sqlEcho := ""
+	if ParseShowSQL(r) {
+		sqlEcho = database.RenderSelectSQL(tableName, selectColumns, filters, sorts, safetyLimit, offset)
+	}
+
 	// Format response
-	if err := h.formatResponse(w, rows, format, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig); err != nil {
+	if err := h.formatResponse(w, rows, format, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig, sqlEcho); err != nil {
 		h.logger.Error("Failed to format response", zap.Error(err), zap.String("request_id", requestID))
 		h.sendErrorWithRequest(w, r, "Failed to format response", http.StatusInternalServerError)
 	}
@@ -366,8 +372,14 @@ func (h *CRUDHandler) handleGroupBy(w http.ResponseWriter, r *http.Request, tabl
 		}
 	}
 
+	// Echo the equivalent SQL when requested
+	sqlEcho := ""
+	if ParseShowSQL(r) {
+		sqlEcho = database.RenderGroupBySQL(tableName, groupByCol, filters)
+	}
+
 	// Write response
-	if err := formats.WriteGroupByJSON(w, formatResults); err != nil {
+	if err := formats.WriteGroupByJSON(w, formatResults, sqlEcho); err != nil {
 		h.logger.Error("Failed to write group by response", zap.Error(err), zap.String("request_id", requestID))
 		h.sendErrorWithRequest(w, r, "Failed to format response", http.StatusInternalServerError)
 	}
@@ -664,18 +676,18 @@ func (h *CRUDHandler) handleDelete(w http.ResponseWriter, r *http.Request, table
 }
 
 // formatResponse formats the query result based on the requested format.
-func (h *CRUDHandler) formatResponse(w http.ResponseWriter, rows *sql.Rows, format string, page, limit int, totalRows int64, paginationRequested bool, safetyLimit int, linksConfig *formats.LinksConfig) error {
+func (h *CRUDHandler) formatResponse(w http.ResponseWriter, rows *sql.Rows, format string, page, limit int, totalRows int64, paginationRequested bool, safetyLimit int, linksConfig *formats.LinksConfig, sqlEcho string) error {
 	switch format {
 	case "csv":
 		return formats.WriteCSV(w, rows)
 	case "json":
-		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig)
+		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig, sqlEcho)
 	case "parquet":
 		return formats.WriteParquet(w, rows)
 	case "arrow":
 		return formats.WriteArrowIPC(w, rows)
 	default:
-		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig)
+		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig, sqlEcho)
 	}
 }
 

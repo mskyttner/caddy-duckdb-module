@@ -293,6 +293,15 @@ func (h *OpenAPIHandler) generateReadOperation() map[string]interface{} {
 				"example": "status",
 			},
 			{
+				"name":        "show_sql",
+				"in":          "query",
+				"description": "When true, includes a meta.sql field in the response echoing the literal SQL statement equivalent to this request's filter=/sort=/group_by= parameters.",
+				"schema": map[string]interface{}{
+					"type": "boolean",
+				},
+				"example": "true",
+			},
+			{
 				"name":        "cursor",
 				"in":          "query",
 				"description": "Cursor for keyset pagination. Use '*' for initial request, then use next_cursor from response for subsequent pages. More efficient than offset pagination for large datasets.",
@@ -1859,6 +1868,17 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 					"pagination": map[string]interface{}{
 						"$ref": "#/components/schemas/Pagination",
 					},
+					"meta": map[string]interface{}{
+						"type":        "object",
+						"description": "Present only when show_sql=true was passed on the request.",
+						"properties": map[string]interface{}{
+							"sql": map[string]interface{}{
+								"type":        "string",
+								"description": "The literal SQL statement equivalent to this request",
+								"example":     "SELECT * FROM users WHERE status = 'active' ORDER BY id DESC LIMIT 5",
+							},
+						},
+					},
 					"_links": map[string]interface{}{
 						"$ref": "#/components/schemas/HATEOASLinks",
 					},
@@ -2136,6 +2156,17 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"description": "Aggregated results grouped by the specified column",
 						"items": map[string]interface{}{
 							"$ref": "#/components/schemas/GroupByResult",
+						},
+					},
+					"meta": map[string]interface{}{
+						"type":        "object",
+						"description": "Present only when show_sql=true was passed on the request.",
+						"properties": map[string]interface{}{
+							"sql": map[string]interface{}{
+								"type":        "string",
+								"description": "The literal SQL statement equivalent to this request",
+								"example":     "SELECT status, COUNT(*) as count FROM users WHERE status = 'active' GROUP BY status ORDER BY count DESC",
+							},
 						},
 					},
 				},

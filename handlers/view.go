@@ -215,9 +215,9 @@ func (h *ViewHandler) formatResponse(w http.ResponseWriter, rows *sql.Rows, form
 	case "arrow":
 		return formats.WriteArrowIPC(w, rows)
 	case "json":
-		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig)
+		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig, "")
 	default:
-		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig)
+		return formats.WriteJSON(w, rows, page, limit, totalRows, paginationRequested, safetyLimit, linksConfig, "")
 	}
 }
 

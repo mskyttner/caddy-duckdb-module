@@ -132,7 +132,7 @@ func (h *HTTPServerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		// json, JSONEachRow, and anything else → standard JSON array of objects
-		if err := formats.WriteJSON(w, rows, 1, 0, 0, false, 0, nil); err != nil {
+		if err := formats.WriteJSON(w, rows, 1, 0, 0, false, 0, nil, ""); err != nil {
 			h.logger.Error("Failed to format response", zap.Error(err), zap.String("request_id", requestID))
 		}
 	}

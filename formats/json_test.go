@@ -28,7 +28,7 @@ func TestWriteJSON_BasicOutput(t *testing.T) {
 	defer rows.Close()
 
 	rec := httptest.NewRecorder()
-	err = WriteJSON(rec, rows, 0, 0, 0, false, 0, nil)
+	err = WriteJSON(rec, rows, 0, 0, 0, false, 0, nil, "")
 	if err != nil {
 		t.Fatalf("WriteJSON failed: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestWriteJSON_WithPagination(t *testing.T) {
 	defer rows.Close()
 
 	rec := httptest.NewRecorder()
-	err = WriteJSON(rec, rows, 1, 10, 100, true, 0, nil)
+	err = WriteJSON(rec, rows, 1, 10, 100, true, 0, nil, "")
 	if err != nil {
 		t.Fatalf("WriteJSON failed: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestWriteJSON_WithHATEOASLinks(t *testing.T) {
 		BasePath: "/duckdb/api/users",
 		Query:    url.Values{"limit": []string{"10"}},
 	}
-	err = WriteJSON(rec, rows, 2, 10, 50, true, 0, linksConfig)
+	err = WriteJSON(rec, rows, 2, 10, 50, true, 0, linksConfig, "")
 	if err != nil {
 		t.Fatalf("WriteJSON failed: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestWriteJSON_NullValues(t *testing.T) {
 	defer rows.Close()
 
 	rec := httptest.NewRecorder()
-	err = WriteJSON(rec, rows, 0, 0, 0, false, 0, nil)
+	err = WriteJSON(rec, rows, 0, 0, 0, false, 0, nil, "")
 	if err != nil {
 		t.Fatalf("WriteJSON failed: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestWriteJSON_EmptyResult(t *testing.T) {
 	defer rows.Close()
 
 	rec := httptest.NewRecorder()
-	err = WriteJSON(rec, rows, 0, 0, 0, false, 0, nil)
+	err = WriteJSON(rec, rows, 0, 0, 0, false, 0, nil, "")
 	if err != nil {
 		t.Fatalf("WriteJSON failed: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestWriteJSON_SafetyLimitTruncation(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	// Safety limit of 3 with 10 total rows - should trigger truncation message
-	err = WriteJSON(rec, rows, 0, 0, 10, false, 3, nil)
+	err = WriteJSON(rec, rows, 0, 0, 10, false, 3, nil, "")
 	if err != nil {
 		t.Fatalf("WriteJSON failed: %v", err)
 	}
@@ -423,7 +423,7 @@ func BenchmarkWriteJSON(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rows, _ := getTestRows(db)
 		rec := httptest.NewRecorder()
-		WriteJSON(rec, rows, 1, 10, 3, true, 0, nil)
+		WriteJSON(rec, rows, 1, 10, 3, true, 0, nil, "")
 		rows.Close()
 	}
 }
