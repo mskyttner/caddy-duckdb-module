@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apache/arrow/go/v18/parquet/file"
+	"github.com/apache/arrow-go/v18/parquet/file"
 )
 
 func TestWriteParquet_BasicOutput(t *testing.T) {

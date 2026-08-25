@@ -242,6 +242,15 @@ func ParseDryRun(r *http.Request) bool {
 	return dryRun == "true" || dryRun == "1"
 }
 
+// ParseShowSQL parses the show_sql parameter from the request. When true,
+// the response includes a meta.sql field echoing the literal SQL equivalent
+// of the request's filter=/sort=/group_by= params (mirrors OpenAlex OQL's
+// meta.x_query response echo).
+func ParseShowSQL(r *http.Request) bool {
+	showSQL := r.URL.Query().Get("show_sql")
+	return showSQL == "true" || showSQL == "1"
+}
+
 // ParseGroupBy parses the group_by parameter from the request.
 // Returns the column name to group by, or empty string if not specified.
 func ParseGroupBy(r *http.Request) (string, error) {

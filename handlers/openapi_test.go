@@ -94,8 +94,8 @@ func TestOpenAPIHandler_Spec_Info(t *testing.T) {
 	if info["title"] != "Caddy DuckDB REST API" {
 		t.Errorf("Expected title 'Caddy DuckDB REST API', got '%v'", info["title"])
 	}
-	if info["version"] != "1.2.0" {
-		t.Errorf("Expected version '1.2.0', got '%v'", info["version"])
+	if info["version"] != "1.3.0" {
+		t.Errorf("Expected version '1.3.0', got '%v'", info["version"])
 	}
 
 	// Verify contact

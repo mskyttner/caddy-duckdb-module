@@ -40,7 +40,7 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 		"info": map[string]interface{}{
 			"title":       "Caddy DuckDB REST API",
 			"description": "A REST API for DuckDB database operations with built-in authentication and authorization.",
-			"version":     "1.2.0",
+			"version":     "1.3.0",
 			"contact": map[string]interface{}{
 				"name": "GitHub Repository",
 				"url":  "https://github.com/tobilg/caddy-duckdb-module",
@@ -291,6 +291,15 @@ func (h *OpenAPIHandler) generateReadOperation() map[string]interface{} {
 					"type": "string",
 				},
 				"example": "status",
+			},
+			{
+				"name":        "show_sql",
+				"in":          "query",
+				"description": "When true, includes a meta.sql field in the response echoing the literal SQL statement equivalent to this request's filter=/sort=/group_by= parameters.",
+				"schema": map[string]interface{}{
+					"type": "boolean",
+				},
+				"example": "true",
 			},
 			{
 				"name":        "cursor",
@@ -1859,6 +1868,17 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 					"pagination": map[string]interface{}{
 						"$ref": "#/components/schemas/Pagination",
 					},
+					"meta": map[string]interface{}{
+						"type":        "object",
+						"description": "Present only when show_sql=true was passed on the request.",
+						"properties": map[string]interface{}{
+							"sql": map[string]interface{}{
+								"type":        "string",
+								"description": "The literal SQL statement equivalent to this request",
+								"example":     "SELECT * FROM users WHERE status = 'active' ORDER BY id DESC LIMIT 5",
+							},
+						},
+					},
 					"_links": map[string]interface{}{
 						"$ref": "#/components/schemas/HATEOASLinks",
 					},
@@ -2136,6 +2156,17 @@ func (h *OpenAPIHandler) generateComponents() map[string]interface{} {
 						"description": "Aggregated results grouped by the specified column",
 						"items": map[string]interface{}{
 							"$ref": "#/components/schemas/GroupByResult",
+						},
+					},
+					"meta": map[string]interface{}{
+						"type":        "object",
+						"description": "Present only when show_sql=true was passed on the request.",
+						"properties": map[string]interface{}{
+							"sql": map[string]interface{}{
+								"type":        "string",
+								"description": "The literal SQL statement equivalent to this request",
+								"example":     "SELECT status, COUNT(*) as count FROM users WHERE status = 'active' GROUP BY status ORDER BY count DESC",
+							},
 						},
 					},
 				},

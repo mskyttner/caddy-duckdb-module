@@ -178,14 +178,14 @@ func (h *QueryHandler) formatQueryResponse(w http.ResponseWriter, rows *sql.Rows
 		return formats.WriteJSONWithMeta(w, rows, executionTime)
 	case "json", "JSONEachRow":
 		// Default: array of objects, no pagination (backwards compatible)
-		return formats.WriteJSON(w, rows, 1, 0, 0, false, 0, nil)
+		return formats.WriteJSON(w, rows, 1, 0, 0, false, 0, nil, "")
 	case "parquet":
 		return formats.WriteParquet(w, rows)
 	case "arrow":
 		return formats.WriteArrowIPC(w, rows)
 	default:
 		// Default to JSON objects format
-		return formats.WriteJSON(w, rows, 1, 0, 0, false, 0, nil)
+		return formats.WriteJSON(w, rows, 1, 0, 0, false, 0, nil, "")
 	}
 }
 

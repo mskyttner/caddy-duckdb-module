@@ -65,7 +65,7 @@ For LLM integration (MCP and token-saving strategies), see [docs/llms.txt](docs/
 
 ### Prerequisites
 
-- Go 1.24 or later
+- Go 1.27 or later
 - CGO enabled (required for DuckDB bindings)
 - C compiler (gcc, clang, or MSVC depending on platform)
 - xcaddy (for building Caddy with custom modules)
@@ -537,6 +537,10 @@ curl "http://localhost:8080/duckdb/api/users?select=id,name,email" -H "X-API-Key
 curl "http://localhost:8080/duckdb/api/users?group_by=status" -H "X-API-Key: your-api-key"
 # {"group_by":[{"key":"active","count":42},{"key":"inactive","count":8}]}
 
+# Show the equivalent SQL for a filter/sort/group_by request — adds meta.sql to the response
+curl "http://localhost:8080/duckdb/api/users?filter=status:eq:active&show_sql=true" -H "X-API-Key: your-api-key"
+# {"data":[...],"meta":{"sql":"SELECT * FROM users WHERE status = 'active'"}}
+
 # Keyset (cursor) pagination — use cursor=* for first page
 curl "http://localhost:8080/duckdb/api/users?cursor=*&limit=20" -H "X-API-Key: your-api-key"
 # Response includes "next_cursor" in meta when more pages exist
@@ -821,7 +825,7 @@ Rate limiting is intentionally **not** implemented in this module. Caddy has exc
 
 ### OpenAPI Specification
 
-A complete OpenAPI 3.0 specification (API version 1.2.0) is available at `/duckdb/openapi.json`:
+A complete OpenAPI 3.0 specification (API version 1.3.0) is available at `/duckdb/openapi.json`:
 
 ```bash
 curl http://localhost:8080/duckdb/openapi.json

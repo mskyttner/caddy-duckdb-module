@@ -578,6 +578,66 @@ func TestExampleQueries_GroupBy(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_GroupBy_ShowSQL(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/duckdb/api/users?group_by=status&filter=status:eq:active&show_sql=true", nil)
+	rec := serve(t, d, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	m := mustJSON(t, rec.Body.Bytes())
+	meta, ok := m["meta"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'meta' object when show_sql=true, got %v", m)
+	}
+	sqlEcho, _ := meta["sql"].(string)
+	want := "SELECT status, COUNT(*) as count FROM users WHERE status = 'active' GROUP BY status ORDER BY count DESC"
+	if sqlEcho != want {
+		t.Errorf("expected meta.sql %q, got %q", want, sqlEcho)
+	}
+}
+
+func TestExampleQueries_GroupBy_NoShowSQL_OmitsMeta(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/duckdb/api/users?group_by=status", nil)
+	rec := serve(t, d, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	m := mustJSON(t, rec.Body.Bytes())
+	if _, hasMeta := m["meta"]; hasMeta {
+		t.Errorf("expected no 'meta' field without show_sql, got %v", m)
+	}
+}
+
+func TestExampleQueries_Filter_ShowSQL(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/duckdb/api/users?filter=status:eq:active&sort=id:desc&limit=5&show_sql=true", nil)
+	rec := serve(t, d, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	m := mustJSON(t, rec.Body.Bytes())
+	meta, ok := m["meta"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'meta' object when show_sql=true, got %v", m)
+	}
+	sqlEcho, _ := meta["sql"].(string)
+	want := "SELECT * FROM users WHERE status = 'active' ORDER BY id DESC LIMIT 5"
+	if sqlEcho != want {
+		t.Errorf("expected meta.sql %q, got %q", want, sqlEcho)
+	}
+}
+
 func TestExampleQueries_CursorPagination(t *testing.T) {
 	d, cleanup := setupExampleModule(t)
 	defer cleanup()
