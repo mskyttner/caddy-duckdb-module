@@ -40,7 +40,7 @@ func (h *OpenAPIHandler) generateOpenAPISpec() map[string]interface{} {
 		"info": map[string]interface{}{
 			"title":       "Caddy DuckDB REST API",
 			"description": "A REST API for DuckDB database operations with built-in authentication and authorization.",
-			"version":     "1.3.0",
+			"version":     "1.4.0",
 			"contact": map[string]interface{}{
 				"name": "GitHub Repository",
 				"url":  "https://github.com/tobilg/caddy-duckdb-module",
@@ -1486,7 +1486,7 @@ func (h *OpenAPIHandler) generateExportOperation() map[string]interface{} {
 	return map[string]interface{}{
 		"tags":        []string{"Export"},
 		"summary":     "Export query results to a file",
-		"description": "Executes a read-only SQL query and writes the results to a file in the server's export directory. Returns a URL to download the file rather than the row data, which avoids large payloads in API responses and LLM context windows. Requires `query` permission. Supported formats: parquet (default), csv, json. Set `public=true` to write to the public-exports directory and return an auth-free URL (UUID capability token) suitable for cross-domain imports — requires DUCKDB_PUBLIC_EXPORTS_DIR to be configured.",
+		"description": "Executes a read-only SQL query and writes the results to a file in the server's export directory. Returns a URL to download the file rather than the row data, which avoids large payloads in API responses and LLM context windows. Requires `query` permission. Supported formats: parquet (default), csv, json, html. For format=html, `sql` must be a ggsql query (e.g. `FROM t VISUALIZE x, y DRAW bar`) — it renders a standalone interactive chart file instead of exporting rows. Set `public=true` to write to the public-exports directory and return an auth-free URL (UUID capability token) suitable for cross-domain imports — requires DUCKDB_PUBLIC_EXPORTS_DIR to be configured.",
 		"operationId": "exportQuery",
 		"security": []map[string]interface{}{
 			{"ApiKeyAuth": []string{}},
@@ -1500,12 +1500,12 @@ func (h *OpenAPIHandler) generateExportOperation() map[string]interface{} {
 						"properties": map[string]interface{}{
 							"sql": map[string]interface{}{
 								"type":        "string",
-								"description": "SQL SELECT query to execute",
+								"description": "SQL SELECT query to execute (or a ggsql query when format=html)",
 								"example":     "SELECT * FROM publications WHERE year > 2020",
 							},
 							"format": map[string]interface{}{
 								"type":        "string",
-								"enum":        []string{"parquet", "csv", "json"},
+								"enum":        []string{"parquet", "csv", "json", "html"},
 								"default":     "parquet",
 								"description": "Output file format",
 							},

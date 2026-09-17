@@ -646,7 +646,7 @@ If the database was created before this feature, run `./tools/auth-db migrate -d
 
 `POST /duckdb/export` — Runs SQL, writes the result to a server-side file, and returns a download URL plus metadata. Ideal for LLM clients that need large datasets without consuming context tokens.
 
-Requires `exports_dir` to be configured. Supports parquet (default), csv, and json.
+Requires `exports_dir` to be configured. Supports parquet (default), csv, json, and html.
 
 ```bash
 curl -X POST http://localhost:8080/duckdb/export \
@@ -685,6 +685,23 @@ curl -X POST http://localhost:8080/duckdb/export \
 ```
 
 Requires `DUCKDB_PUBLIC_EXPORTS_DIR` to be configured. Files expire on the same TTL as regular exports.
+
+#### Chart Export (format=html)
+
+For `format=html`, `sql` must be a [ggsql](https://github.com/posit-dev/ggsql) query — a
+Grammar-of-Graphics extension to SQL — instead of a plain `SELECT`. It renders a standalone,
+self-contained interactive chart (Vega-Lite embedded, no CDN or network access needed to view
+it) rather than exporting rows:
+
+```bash
+curl -X POST http://localhost:8080/duckdb/export \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "FROM users VISUALIZE age AS x, id AS y DRAW bar", "format": "html"}'
+```
+
+Requires the `ggsql` DuckDB extension (pre-installed in the Docker image). See `ggsql docs` or
+`ggsql skill` for the full `VISUALIZE`/`DRAW`/`SCALE`/`FACET`/`LABEL` grammar.
 
 ### httpserver-Compatible Endpoint
 
@@ -825,7 +842,7 @@ Rate limiting is intentionally **not** implemented in this module. Caddy has exc
 
 ### OpenAPI Specification
 
-A complete OpenAPI 3.0 specification (API version 1.3.0) is available at `/duckdb/openapi.json`:
+A complete OpenAPI 3.0 specification (API version 1.4.0) is available at `/duckdb/openapi.json`:
 
 ```bash
 curl http://localhost:8080/duckdb/openapi.json

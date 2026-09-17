@@ -892,6 +892,37 @@ func TestExampleQueries_Export_TokenSaving(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_Export_HTML(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("POST", "/duckdb/export",
+		strings.NewReader(`{"sql":"FROM users VISUALIZE age, id AS y DRAW bar","format":"html"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(t, d, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	m := mustJSON(t, rec.Body.Bytes())
+	if m["format"] != "html" {
+		t.Errorf("expected format:html, got %v", m["format"])
+	}
+	urlPath, ok := m["url"].(string)
+	if !ok || urlPath == "" {
+		t.Fatalf("expected non-empty 'url' in export response, got %v", m)
+	}
+
+	downloadReq := httptest.NewRequest("GET", urlPath, nil)
+	downloadRec := serve(t, d, downloadReq)
+	if downloadRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 downloading chart, got %d: %s", downloadRec.Code, downloadRec.Body)
+	}
+	if !strings.HasPrefix(downloadRec.Body.String(), "<!doctype html>") {
+		t.Errorf("expected chart file to start with '<!doctype html>', got %q", downloadRec.Body.String()[:30])
+	}
+}
+
 // ─── New features: MCP endpoint ──────────────────────────────────────────────
 
 func mcpCall(t *testing.T, d *DuckDB, id int, method string, params interface{}) map[string]interface{} {

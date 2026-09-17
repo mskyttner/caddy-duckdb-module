@@ -211,10 +211,10 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 	srv.AddTool(
 		&mcp.Tool{
 			Name:        "export",
-			Description: "Execute a SQL query and write results to a file. Returns a download URL instead of row data — use this for large result sets to avoid filling the context window. Supported formats: parquet (default), csv, json. Set public=true to get an auth-free URL suitable for cross-domain imports (requires DUCKDB_PUBLIC_EXPORTS_DIR on server).",
+			Description: "Execute a SQL query and write results to a file. Returns a download URL instead of row data — use this for large result sets to avoid filling the context window. Supported formats: parquet (default), csv, json, html. For format=html, sql must be a ggsql query (e.g. \"FROM t VISUALIZE x, y DRAW bar\") — it renders a standalone interactive chart, not a table export; see the ggsql docs/skill command for its VISUALIZE/DRAW/SCALE/FACET/LABEL grammar. Set public=true to get an auth-free URL suitable for cross-domain imports (requires DUCKDB_PUBLIC_EXPORTS_DIR on server).",
 			InputSchema: buildSchema(
-				strProp("sql", "SQL SELECT query to export", true),
-				enumProp("format", "Output format: parquet (default), csv, json", "parquet", "csv", "json"),
+				strProp("sql", "SQL SELECT query to export (or a ggsql query when format=html)", true),
+				enumProp("format", "Output format: parquet (default), csv, json, html", "parquet", "csv", "json", "html"),
 				numProp("ttl_minutes", "File lifetime in minutes (0 = server default)"),
 				boolProp("public", "If true, return an auth-free URL (UUID capability token). Requires public exports to be configured on this server."),
 			),
