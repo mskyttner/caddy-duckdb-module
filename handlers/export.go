@@ -426,6 +426,11 @@ func (h *ExportHandler) ServeDownload(w http.ResponseWriter, r *http.Request, ur
 		w.Header().Set("Content-Type", "text/csv")
 	case strings.HasSuffix(filename, ".json"):
 		w.Header().Set("Content-Type", "application/json")
+	case strings.HasSuffix(filename, ".html"):
+		// Chart exports render inline (e.g. in an iframe) rather than downloading.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		http.ServeContent(w, r, filename, time.Time{}, f)
+		return
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
@@ -469,6 +474,11 @@ func (h *ExportHandler) ServePublicDownload(w http.ResponseWriter, r *http.Reque
 		w.Header().Set("Content-Type", "text/csv")
 	case strings.HasSuffix(filename, ".json"):
 		w.Header().Set("Content-Type", "application/json")
+	case strings.HasSuffix(filename, ".html"):
+		// Chart exports render inline (e.g. in an iframe) rather than downloading.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		http.ServeContent(w, r, filename, time.Time{}, f)
+		return
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}

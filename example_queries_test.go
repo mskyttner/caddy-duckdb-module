@@ -921,6 +921,13 @@ func TestExampleQueries_Export_HTML(t *testing.T) {
 	if !strings.HasPrefix(downloadRec.Body.String(), "<!doctype html>") {
 		t.Errorf("expected chart file to start with '<!doctype html>', got %q", downloadRec.Body.String()[:30])
 	}
+	// Must render inline (e.g. in an iframe) rather than trigger a download.
+	if ct := downloadRec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("expected Content-Type text/html, got %q", ct)
+	}
+	if cd := downloadRec.Header().Get("Content-Disposition"); cd != "" {
+		t.Errorf("expected no Content-Disposition header (must render inline), got %q", cd)
+	}
 }
 
 // ─── New features: MCP endpoint ──────────────────────────────────────────────
