@@ -109,12 +109,15 @@ RUN curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VER
 # - http_client: HTTP GET/POST functions; successor to http_request (community)
 # - textplot:    ASCII chart functions (tp_bar, tp_sparkline, textplot_histogram)
 # - markdown:    read_markdown() for parsing Markdown files into tables
+# - ggsql:       Grammar-of-Graphics SQL extension; renders standalone HTML charts
+#                via the export tool's format=html (community, alpha — API may shift)
 RUN HOME=/home/caddy duckdb -c " \
     INSTALL lance; LOAD lance; \
     INSTALL fts; LOAD fts; \
     INSTALL http_client FROM community; LOAD http_client; \
     INSTALL textplot FROM community; LOAD textplot; \
     INSTALL markdown FROM community; LOAD markdown; \
+    INSTALL ggsql FROM community; LOAD ggsql; \
     " && \
     chown -R caddy:caddy /home/caddy/.duckdb
 

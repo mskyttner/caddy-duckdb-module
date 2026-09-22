@@ -562,6 +562,36 @@ func (m *Manager) warmConnections() {
 	m.logger.Info("Connection pool warmed")
 }
 
+// RenderChart executes a ggsql query and returns the rendered standalone HTML
+// chart. ggsql_output is a session-scoped setting, so both the SET and the
+// query must run on the same physical connection — a plain QueryMain call
+// could land on a different pooled connection than a preceding SET.
+func (m *Manager) RenderChart(ctx context.Context, ggsqlQuery string) ([]byte, error) {
+	conn, err := m.mainDB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	defer conn.Close()
+
+	// SET ggsql_output is a custom GUC registered by the extension — unlike a
+	// scalar function call, it does not trigger DuckDB's autoload, so INSTALL/LOAD
+	// must run first on this connection. INSTALL is a fast local no-op once the
+	// extension is already cached (pre-installed by the Docker image).
+	if _, err := conn.ExecContext(ctx, "INSTALL ggsql FROM community; LOAD ggsql;"); err != nil {
+		return nil, fmt.Errorf("failed to load ggsql extension: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SET ggsql_output = 'html'"); err != nil {
+		return nil, fmt.Errorf("failed to set ggsql_output: %w", err)
+	}
+
+	var html string
+	if err := conn.QueryRowContext(ctx, "SELECT ggsql($1)", ggsqlQuery).Scan(&html); err != nil {
+		return nil, fmt.Errorf("ggsql render failed: %w", err)
+	}
+
+	return []byte(html), nil
+}
+
 // getTableColumns retrieves and caches the column names for a table.
 // This enables prepared statement pooling by normalizing INSERT statements
 // to always use the same column order, even when users omit nullable columns.

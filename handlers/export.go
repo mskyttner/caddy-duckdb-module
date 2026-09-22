@@ -151,11 +151,11 @@ func (h *ExportHandler) runExport(sqlQuery, format string, ttlMinutes int, publi
 		return nil, fmt.Errorf("export directory not configured")
 	}
 	switch format {
-	case "parquet", "csv", "json":
+	case "parquet", "csv", "json", "html":
 	case "":
 		format = "parquet"
 	default:
-		return nil, fmt.Errorf("unsupported format %q (valid: parquet, csv, json)", format)
+		return nil, fmt.Errorf("unsupported format %q (valid: parquet, csv, json, html)", format)
 	}
 	ttl := h.defaultTTL
 	if ttlMinutes > 0 {
@@ -166,6 +166,17 @@ func (h *ExportHandler) runExport(sqlQuery, format string, ttlMinutes int, publi
 	}
 	filename := uuid.New().String() + "." + format
 	filePath := filepath.Join(targetDir, filename)
+
+	if format == "html" {
+		html, err := h.dbMgr.RenderChart(context.Background(), sqlQuery)
+		if err != nil {
+			return nil, fmt.Errorf("chart render failed: %w", err)
+		}
+		if err := os.WriteFile(filePath, html, 0640); err != nil {
+			return nil, fmt.Errorf("failed to write chart file: %w", err)
+		}
+		return h.finalizeExport(filePath, filename, format, targetURL, 0, public, ttl)
+	}
 
 	rows, err := h.dbMgr.QueryMain(sqlQuery)
 	if err != nil {
@@ -194,6 +205,43 @@ func (h *ExportHandler) runExport(sqlQuery, format string, ttlMinutes int, publi
 		return nil, fmt.Errorf("failed to write export: %w", err)
 	}
 
+	return h.finalizeExport(filePath, filename, format, targetURL, rowCount, public, ttl)
+}
+
+// writeChartArtifact materializes pre-rendered chart bytes (from the ggsql_chart MCP
+// tool) as a new export file, reusing the same exports_dir/public_exports_dir, UUID
+// filename, and expiry bookkeeping as runExport -- so chart URLs expire and are served
+// identically to every other export format.
+func (h *ExportHandler) writeChartArtifact(data []byte, ext, format string, ttlMinutes int, public bool) (*ExportResponse, error) {
+	targetDir := h.exportsDir
+	targetURL := h.exportsURL
+	if public {
+		if h.publicExportsDir == "" {
+			return nil, fmt.Errorf("public export directory not configured (set DUCKDB_PUBLIC_EXPORTS_DIR)")
+		}
+		targetDir = h.publicExportsDir
+		targetURL = h.publicExportsURL
+	} else if h.exportsDir == "" {
+		return nil, fmt.Errorf("export directory not configured")
+	}
+	ttl := h.defaultTTL
+	if ttlMinutes > 0 {
+		ttl = time.Duration(ttlMinutes) * time.Minute
+	}
+	if err := os.MkdirAll(targetDir, 0750); err != nil {
+		return nil, fmt.Errorf("failed to create exports directory: %w", err)
+	}
+	filename := uuid.New().String() + "." + ext
+	filePath := filepath.Join(targetDir, filename)
+	if err := os.WriteFile(filePath, data, 0640); err != nil {
+		return nil, fmt.Errorf("failed to write chart file: %w", err)
+	}
+	return h.finalizeExport(filePath, filename, format, targetURL, 0, public, ttl)
+}
+
+// finalizeExport stats the written file, records its expiry, and builds the response.
+// Shared by every export format's write path in runExport.
+func (h *ExportHandler) finalizeExport(filePath, filename, format, targetURL string, rowCount int64, public bool, ttl time.Duration) (*ExportResponse, error) {
 	fi, err := os.Stat(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat export file: %w", err)
@@ -265,9 +313,9 @@ func (h *ExportHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		format = "parquet"
 	}
 	switch format {
-	case "parquet", "csv", "json":
+	case "parquet", "csv", "json", "html":
 	default:
-		h.sendError(w, fmt.Sprintf("Unsupported format %q (valid: parquet, csv, json)", format), http.StatusBadRequest)
+		h.sendError(w, fmt.Sprintf("Unsupported format %q (valid: parquet, csv, json, html)", format), http.StatusBadRequest)
 		return
 	}
 
@@ -293,37 +341,51 @@ func (h *ExportHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		zap.String("request_id", requestID),
 	)
 
-	rows, err := h.dbMgr.QueryMain(req.SQL)
-	if err != nil {
-		h.logger.Error("Query failed", zap.Error(err), zap.String("request_id", requestID))
-		h.sendError(w, "Query execution failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	f, err := os.Create(filePath)
-	if err != nil {
-		h.logger.Error("Failed to create export file", zap.Error(err), zap.String("request_id", requestID))
-		h.sendError(w, "Failed to create export file", http.StatusInternalServerError)
-		return
-	}
-
 	var rowCount int64
-	switch format {
-	case "parquet":
-		rowCount, err = formats.WriteParquetToWriter(f, rows)
-	case "csv":
-		rowCount, err = formats.WriteCSVToWriter(f, rows)
-	case "json":
-		rowCount, err = formats.WriteJSONToWriter(f, rows)
-	}
-	f.Close()
+	if format == "html" {
+		html, err := h.dbMgr.RenderChart(r.Context(), req.SQL)
+		if err != nil {
+			h.logger.Error("Chart render failed", zap.Error(err), zap.String("request_id", requestID))
+			h.sendError(w, "Chart render failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := os.WriteFile(filePath, html, 0640); err != nil {
+			h.logger.Error("Failed to write chart file", zap.Error(err), zap.String("request_id", requestID))
+			h.sendError(w, "Failed to write chart file", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		rows, err := h.dbMgr.QueryMain(req.SQL)
+		if err != nil {
+			h.logger.Error("Query failed", zap.Error(err), zap.String("request_id", requestID))
+			h.sendError(w, "Query execution failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
 
-	if err != nil {
-		os.Remove(filePath)
-		h.logger.Error("Failed to write export file", zap.Error(err), zap.String("request_id", requestID))
-		h.sendError(w, "Failed to write export: "+err.Error(), http.StatusInternalServerError)
-		return
+		f, err := os.Create(filePath)
+		if err != nil {
+			h.logger.Error("Failed to create export file", zap.Error(err), zap.String("request_id", requestID))
+			h.sendError(w, "Failed to create export file", http.StatusInternalServerError)
+			return
+		}
+
+		switch format {
+		case "parquet":
+			rowCount, err = formats.WriteParquetToWriter(f, rows)
+		case "csv":
+			rowCount, err = formats.WriteCSVToWriter(f, rows)
+		case "json":
+			rowCount, err = formats.WriteJSONToWriter(f, rows)
+		}
+		f.Close()
+
+		if err != nil {
+			os.Remove(filePath)
+			h.logger.Error("Failed to write export file", zap.Error(err), zap.String("request_id", requestID))
+			h.sendError(w, "Failed to write export: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	fi, err := os.Stat(filePath)
@@ -395,6 +457,11 @@ func (h *ExportHandler) ServeDownload(w http.ResponseWriter, r *http.Request, ur
 		w.Header().Set("Content-Type", "text/csv")
 	case strings.HasSuffix(filename, ".json"):
 		w.Header().Set("Content-Type", "application/json")
+	case strings.HasSuffix(filename, ".html"):
+		// Chart exports render inline (e.g. in an iframe) rather than downloading.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		http.ServeContent(w, r, filename, time.Time{}, f)
+		return
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
@@ -438,6 +505,11 @@ func (h *ExportHandler) ServePublicDownload(w http.ResponseWriter, r *http.Reque
 		w.Header().Set("Content-Type", "text/csv")
 	case strings.HasSuffix(filename, ".json"):
 		w.Header().Set("Content-Type", "application/json")
+	case strings.HasSuffix(filename, ".html"):
+		// Chart exports render inline (e.g. in an iframe) rather than downloading.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		http.ServeContent(w, r, filename, time.Time{}, f)
+		return
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}

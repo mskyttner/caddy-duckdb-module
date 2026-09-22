@@ -181,6 +181,9 @@ If you get CGO-related errors, ensure:
             # Full-text search sidecar URL (optional)
             # fts_service_url http://fts-sidecar:8701
 
+            # ggvisual sidecar URL for ggsql chart rendering (optional; enables /ggsql)
+            # ggvisual_service_url http://ggvisual:8080
+
             # Allowed CORS origins — space-separated, or "*" for all (optional)
             # cors_origins http://localhost:5522 https://myapp.example.com
 
@@ -222,6 +225,7 @@ If you get CGO-related errors, ensure:
 | `temp_directory` | string | *system default* | Directory for temporary files when spilling to disk. Optional. |
 | `init_file` | string | *unset* | SQL file to execute once on startup. Optional. |
 | `fts_service_url` | string | *unset* | Full-text search sidecar URL (e.g. `http://fts:8701`). Optional. |
+| `ggvisual_service_url` | string | *unset* | ggvisual sidecar URL for ggsql chart rendering (e.g. `http://ggvisual:8080`). Required to enable `/ggsql`. Optional. |
 | `cors_origins` | string | *unset* | Space-separated allowed CORS origins, or `*`. Optional. |
 | `trusted_user_header` | string | *unset* | HTTP header carrying a pre-authenticated username (e.g. `X-Vouch-User`). Optional. |
 | `exports_dir` | string | *unset* | Filesystem directory for export files. Required to enable `/export`. |
@@ -324,6 +328,7 @@ All settings can be configured via environment variables:
 | `DUCKDB_TEMP_DIRECTORY` | *(unset)* | Spill directory |
 | `DUCKDB_INIT_FILE` | *(unset)* | SQL file run on startup |
 | `DUCKDB_FTS_SERVICE_URL` | *(unset)* | FTS sidecar URL |
+| `DUCKDB_GGVISUAL_SERVICE_URL` | *(unset)* | ggvisual sidecar URL (required to enable `/ggsql`) |
 | `DUCKDB_CORS_ORIGINS` | *(unset)* | Space-separated allowed origins, or `*` |
 | `DUCKDB_EXPORTS_DIR` | *(unset)* | Directory for export files (required to enable `/export`) |
 | `DUCKDB_EXPORTS_URL` | `<prefix>/exports` | URL prefix for exported files |
@@ -500,6 +505,7 @@ All endpoints are under the configured route prefix (default: `/duckdb`). All re
 | `/docs/` | GET | none | Swagger UI |
 | `/health` | GET | none | Health check |
 | `/find` | GET | key | Full-text search (requires FTS sidecar) |
+| `/ggsql` | POST | key | Render a ggsql chart (requires ggvisual sidecar) |
 
 ### CRUD Operations
 
@@ -646,7 +652,7 @@ If the database was created before this feature, run `./tools/auth-db migrate -d
 
 `POST /duckdb/export` — Runs SQL, writes the result to a server-side file, and returns a download URL plus metadata. Ideal for LLM clients that need large datasets without consuming context tokens.
 
-Requires `exports_dir` to be configured. Supports parquet (default), csv, and json.
+Requires `exports_dir` to be configured. Supports parquet (default), csv, json, and html.
 
 ```bash
 curl -X POST http://localhost:8080/duckdb/export \
@@ -686,6 +692,54 @@ curl -X POST http://localhost:8080/duckdb/export \
 
 Requires `DUCKDB_PUBLIC_EXPORTS_DIR` to be configured. Files expire on the same TTL as regular exports.
 
+#### Chart Export (format=html)
+
+For `format=html`, `sql` must be a [ggsql](https://github.com/posit-dev/ggsql) query — a
+Grammar-of-Graphics extension to SQL — instead of a plain `SELECT`. It renders a standalone,
+self-contained interactive chart (Vega-Lite embedded, no CDN or network access needed to view
+it) rather than exporting rows:
+
+```bash
+curl -X POST http://localhost:8080/duckdb/export \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "FROM users VISUALIZE age AS x, id AS y DRAW bar", "format": "html"}'
+```
+
+Requires the `ggsql` DuckDB extension (pre-installed in the Docker image). See `ggsql docs` or
+`ggsql skill` for the full `VISUALIZE`/`DRAW`/`SCALE`/`FACET`/`LABEL` grammar, or the
+`ggsql-syntax` MCP doc resource / `duckdb://docs/ggsql-syntax` for the same reference served by
+this module.
+
+### Chart Rendering Endpoint (`/ggsql`)
+
+`POST /duckdb/ggsql` — like `/export?format=html` above, but for many more output formats
+(Vega-Lite spec, PNG, SVG, ANSI terminal art, and more) via a separate `ggvisual` sidecar
+service, instead of the single `html` writer built into the DuckDB extension. `sql` (a plain
+`SELECT`) and `visualise` (the ggsql `VISUALISE ... DRAW ...` clause, no `FROM`) are separate
+fields — `visualise` describes the chart for whatever `sql` returns:
+
+```bash
+curl -X POST http://localhost:8080/duckdb/ggsql \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql": "SELECT year, revenue FROM sales ORDER BY year",
+    "visualise": "VISUALISE year AS x, revenue AS y DRAW bar",
+    "format": "vegalite"
+  }'
+```
+
+The response's `Content-Type` matches the requested `format` (e.g. `application/json` for
+`vegalite`, `image/png`, `image/svg+xml`, or `text/plain` for `ansi`/`braille` — never
+JSON-wrapped, since JSON string escaping would corrupt raw terminal escape codes). Requires
+`query` permission and the `ggvisual` sidecar to be reachable — set `ggvisual_service_url` in the
+Caddyfile or `DUCKDB_GGVISUAL_SERVICE_URL`, and see `docker-compose.yml`'s commented `ggvisual`
+service block for how to run it. Returns 503 if the sidecar isn't configured or is unreachable
+(safe to retry), or the sidecar's own error category translated to the matching HTTP status
+(400/504/500) if it rejects the query. See `ggsql-syntax` (above) for the shared grammar
+reference.
+
 ### httpserver-Compatible Endpoint
 
 `POST /duckdb/` — Accepts raw SQL in the request body; compatible with [duck-ui](https://github.com/caioricciuti/duck-ui) and other ClickHouse-compatible clients.
@@ -721,7 +775,10 @@ Available MCP tools:
 | `query` | Run read-only SQL, returns up to `max_mcp_rows` rows (default: 500) |
 | `execute` | Run write SQL (requires `can_execute` permission) |
 | `export` | Run SQL → server file → return URL (requires `exports_dir`) |
+| `ggsql_chart` | Render a ggsql chart via the ggvisual sidecar → server file → return URL (requires `ggvisual_service_url`) |
 | `list_tables` | List all non-internal tables |
+| `list_macros` | Compact macro inventory: name, type, parameters, description |
+| `list_extensions` | Installed/loaded DuckDB extensions with version |
 | `describe` | Column schema for a table or view |
 | `database_info` | Database statistics and metadata, including estimated row counts and export base URL |
 | `schema` | Compact multi-table schema — use `table_pattern` to filter |
@@ -825,7 +882,7 @@ Rate limiting is intentionally **not** implemented in this module. Caddy has exc
 
 ### OpenAPI Specification
 
-A complete OpenAPI 3.0 specification (API version 1.3.0) is available at `/duckdb/openapi.json`:
+A complete OpenAPI 3.0 specification (API version 1.4.0) is available at `/duckdb/openapi.json`:
 
 ```bash
 curl http://localhost:8080/duckdb/openapi.json

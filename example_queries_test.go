@@ -114,7 +114,7 @@ func setupExampleModule(t *testing.T) (*DuckDB, func()) {
 	d.httpserverHandler = handlers.NewHTTPServerHandler(mgr, authorizer, d.logger)
 	d.executeHandler = handlers.NewExecuteHandler(mgr, authorizer, d.logger)
 	d.exportHandler = handlers.NewExportHandler(mgr, authorizer, d.logger, exportsDir, "/duckdb/exports", "", "", time.Hour)
-	d.mcpHandler = handlers.NewMCPHandler(mgr, authorizer, d.exportHandler, nil, d.logger, 200, "", "")
+	d.mcpHandler = handlers.NewMCPHandler(mgr, authorizer, d.exportHandler, nil, nil, d.logger, 200, "", "")
 
 	return d, func() { mgr.Close() }
 }
@@ -892,6 +892,44 @@ func TestExampleQueries_Export_TokenSaving(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_Export_HTML(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("POST", "/duckdb/export",
+		strings.NewReader(`{"sql":"FROM users VISUALIZE age, id AS y DRAW bar","format":"html"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(t, d, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	m := mustJSON(t, rec.Body.Bytes())
+	if m["format"] != "html" {
+		t.Errorf("expected format:html, got %v", m["format"])
+	}
+	urlPath, ok := m["url"].(string)
+	if !ok || urlPath == "" {
+		t.Fatalf("expected non-empty 'url' in export response, got %v", m)
+	}
+
+	downloadReq := httptest.NewRequest("GET", urlPath, nil)
+	downloadRec := serve(t, d, downloadReq)
+	if downloadRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 downloading chart, got %d: %s", downloadRec.Code, downloadRec.Body)
+	}
+	if !strings.HasPrefix(downloadRec.Body.String(), "<!doctype html>") {
+		t.Errorf("expected chart file to start with '<!doctype html>', got %q", downloadRec.Body.String()[:30])
+	}
+	// Must render inline (e.g. in an iframe) rather than trigger a download.
+	if ct := downloadRec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("expected Content-Type text/html, got %q", ct)
+	}
+	if cd := downloadRec.Header().Get("Content-Disposition"); cd != "" {
+		t.Errorf("expected no Content-Disposition header (must render inline), got %q", cd)
+	}
+}
+
 // ─── New features: MCP endpoint ──────────────────────────────────────────────
 
 func mcpCall(t *testing.T, d *DuckDB, id int, method string, params interface{}) map[string]interface{} {
@@ -985,6 +1023,22 @@ func TestExampleQueries_MCP_ListTables(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_MCP_ListExtensions(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 31, "tools/call", map[string]interface{}{
+		"name":      "list_extensions",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "extension_name") {
+		t.Errorf("expected 'extension_name' in list_extensions result, got: %s", text)
+	}
+}
+
 func TestExampleQueries_MCP_Describe(t *testing.T) {
 	d, cleanup := setupExampleModule(t)
 	defer cleanup()
@@ -1042,6 +1096,127 @@ func TestExampleQueries_MCP_Export(t *testing.T) {
 	}
 	if _, hasURL := exportResp["url"]; !hasURL {
 		t.Errorf("expected url in MCP export result, got: %v", exportResp)
+	}
+}
+
+func TestExampleQueries_MCP_GgsqlChart(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"$schema":"vega-lite"}`))
+	}))
+	defer mock.Close()
+
+	d.ggsqlHandler = handlers.NewGgsqlHandler(d.dbMgr, d.authorizer, mock.URL, d.AbsoluteMaxRows, d.logger)
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, d.ggsqlHandler, d.logger, 200, "", "")
+
+	resp := mcpCall(t, d, 20, "tools/call", map[string]interface{}{
+		"name": "ggsql_chart",
+		"arguments": map[string]interface{}{
+			"sql":       "SELECT age, id FROM users",
+			"visualise": "VISUALISE age AS x, id AS y DRAW bar",
+		},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if strings.HasPrefix(text, "Error:") {
+		t.Fatalf("MCP ggsql_chart returned error: %s", text)
+	}
+	var chartResp map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &chartResp); err != nil {
+		t.Fatalf("MCP ggsql_chart result not valid JSON: %v\n%s", err, text)
+	}
+	urlStr, _ := chartResp["url"].(string)
+	if urlStr == "" {
+		t.Errorf("expected url in MCP ggsql_chart result, got: %v", chartResp)
+	}
+	if !strings.HasSuffix(urlStr, ".json") {
+		t.Errorf("expected .json extension for vegalite format, got url: %s", urlStr)
+	}
+	if chartResp["sql"] != "SELECT age, id FROM users" {
+		t.Errorf("expected sql echoed back, got: %v", chartResp["sql"])
+	}
+	if chartResp["visualise"] != "VISUALISE age AS x, id AS y DRAW bar" {
+		t.Errorf("expected visualise echoed back, got: %v", chartResp["visualise"])
+	}
+}
+
+func TestExampleQueries_MCP_GgsqlChart_NotConfigured(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+	// setupExampleModule leaves d.ggsqlHandler nil (no ggvisual_service_url).
+
+	resp := mcpCall(t, d, 21, "tools/call", map[string]interface{}{
+		"name": "ggsql_chart",
+		"arguments": map[string]interface{}{
+			"sql":       "SELECT age FROM users",
+			"visualise": "VISUALISE age AS x DRAW bar",
+		},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error when ggsql handler not configured, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_GgsqlChart_MissingArgs(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mock.Close()
+	d.ggsqlHandler = handlers.NewGgsqlHandler(d.dbMgr, d.authorizer, mock.URL, d.AbsoluteMaxRows, d.logger)
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, d.ggsqlHandler, d.logger, 200, "", "")
+
+	cases := []map[string]interface{}{
+		{"visualise": "VISUALISE age AS x DRAW bar"}, // missing sql
+		{"sql": "SELECT age FROM users"},             // missing visualise
+	}
+	for i, args := range cases {
+		resp := mcpCall(t, d, 22+i, "tools/call", map[string]interface{}{
+			"name":      "ggsql_chart",
+			"arguments": args,
+		})
+		result := resp["result"].(map[string]interface{})
+		content := result["content"].([]interface{})
+		text := content[0].(map[string]interface{})["text"].(string)
+		if !strings.Contains(text, "Error") {
+			t.Errorf("args %v: expected error, got: %s", args, text)
+		}
+	}
+}
+
+func TestExampleQueries_MCP_GgsqlChart_InternalTable_Blocked(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mock.Close()
+	d.ggsqlHandler = handlers.NewGgsqlHandler(d.dbMgr, d.authorizer, mock.URL, d.AbsoluteMaxRows, d.logger)
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, d.ggsqlHandler, d.logger, 200, "", "")
+
+	resp := mcpCall(t, d, 24, "tools/call", map[string]interface{}{
+		"name": "ggsql_chart",
+		"arguments": map[string]interface{}{
+			"sql":       "SELECT * FROM api_keys",
+			"visualise": "VISUALISE key AS x DRAW bar",
+		},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "Error") {
+		t.Errorf("expected error for internal table, got: %s", text)
 	}
 }
 
@@ -1426,7 +1601,7 @@ func TestExampleQueries_MCP_TableMacro_Registered(t *testing.T) {
 
 	// Re-provision the MCP handler so it discovers the new macro.
 	// The handler discovers macros at construction time, so we rebuild it.
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, d.logger, 200, "", "")
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, nil, d.logger, 200, "", "")
 
 	// The macro should appear in the tools list.
 	resp := mcpCall(t, d, 28, "tools/list", map[string]interface{}{})
@@ -1455,6 +1630,64 @@ func TestExampleQueries_MCP_TableMacro_Registered(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_MCP_ListMacros(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	_, err := d.dbMgr.ExecMain(`
+		CREATE OR REPLACE MACRO top_items(n := 5) AS TABLE
+		  SELECT range AS id, 'item'||range AS label FROM range(1, n+1);
+	`)
+	if err != nil {
+		t.Fatalf("create macro: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`COMMENT ON MACRO TABLE top_items IS 'Top N synthetic items'`); err != nil {
+		t.Fatalf("comment on macro: %v", err)
+	}
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, nil, d.logger, 200, "", "")
+
+	resp := mcpCall(t, d, 30, "tools/call", map[string]interface{}{
+		"name":      "list_macros",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+
+	var out struct {
+		Macros []struct {
+			Name        string   `json:"name"`
+			Type        string   `json:"type"`
+			Params      []string `json:"params"`
+			Description string   `json:"description"`
+		} `json:"macros"`
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("failed to parse list_macros response: %v\nbody: %s", err, text)
+	}
+
+	var found bool
+	for _, m := range out.Macros {
+		if m.Name != "top_items" {
+			continue
+		}
+		found = true
+		if m.Type != "table" {
+			t.Errorf("expected type 'table', got %q", m.Type)
+		}
+		if len(m.Params) != 1 || m.Params[0] != "n" {
+			t.Errorf("expected params [n], got %v", m.Params)
+		}
+		if m.Description != "Top N synthetic items" {
+			t.Errorf("expected description from COMMENT ON MACRO, got %q", m.Description)
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'top_items' in list_macros output, got: %s", text)
+	}
+}
+
 func TestExampleQueries_MCP_TableMacro_OmittedParamUsesDefault(t *testing.T) {
 	d, cleanup := setupExampleModule(t)
 	defer cleanup()
@@ -1466,7 +1699,7 @@ func TestExampleQueries_MCP_TableMacro_OmittedParamUsesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create macro: %v", err)
 	}
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, d.logger, 200, "", "")
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, nil, d.logger, 200, "", "")
 
 	// Call without providing n — should use the default (5) and return 5 rows.
 	resp := mcpCall(t, d, 30, "tools/call", map[string]interface{}{

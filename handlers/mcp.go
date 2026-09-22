@@ -23,6 +23,7 @@ import (
 //   - query(sql, max_rows?)                read-only SQL, result capped at maxRows
 //   - execute(sql)                         write SQL, requires OperationExecute
 //   - export(sql, format?, ttl?)           write result to file, returns URL
+//   - ggsql_chart(sql, visualise, format?) render a ggsql chart via ggvisual, returns URL
 //   - list_tables(schema?, include_views?)
 //   - describe(table)
 //   - database_info()
@@ -47,6 +48,7 @@ func NewMCPHandler(
 	authorizer *auth.Authorizer,
 	exportHandler *ExportHandler,
 	importHandler *ImportHandler,
+	ggsqlHandler *GgsqlHandler,
 	logger *zap.Logger,
 	maxRows int,
 	docsDir string,
@@ -153,7 +155,10 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 					"(2) never use SELECT * — project only the columns you need, "+
 					"(3) place the smallest/most selective table on the left side of each join. "+
 					"Pattern: WITH ids AS (SELECT id FROM small_table WHERE filter) "+
-					"SELECT specific_cols FROM ids JOIN large_table USING (id).", maxRows),
+					"SELECT specific_cols FROM ids JOIN large_table USING (id). "+
+					"For textplot charts (tp_bar/tp_sparkline/tp_density), always pass \"on\" and \"off\" "+
+					"named parameters (e.g. \"on\" := '█', \"off\" := '░') to get Unicode block glyphs "+
+					"instead of emoji — see duckdb://docs/visualization for details.", maxRows),
 			InputSchema: buildSchema(
 				strProp("sql", "Read-only SQL statement", true),
 				numProp("max_rows", "Max rows to return"),
@@ -211,10 +216,10 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 	srv.AddTool(
 		&mcp.Tool{
 			Name:        "export",
-			Description: "Execute a SQL query and write results to a file. Returns a download URL instead of row data — use this for large result sets to avoid filling the context window. Supported formats: parquet (default), csv, json. Set public=true to get an auth-free URL suitable for cross-domain imports (requires DUCKDB_PUBLIC_EXPORTS_DIR on server).",
+			Description: "Execute a SQL query and write results to a file. Returns a download URL instead of row data — use this for large result sets to avoid filling the context window. Supported formats: parquet (default), csv, json, html. For format=html, sql must be a ggsql query (e.g. \"FROM t VISUALIZE x, y DRAW bar\") — it renders a standalone interactive chart, not a table export; see the ggsql docs/skill command for its VISUALIZE/DRAW/SCALE/FACET/LABEL grammar. Set public=true to get an auth-free URL suitable for cross-domain imports (requires DUCKDB_PUBLIC_EXPORTS_DIR on server).",
 			InputSchema: buildSchema(
-				strProp("sql", "SQL SELECT query to export", true),
-				enumProp("format", "Output format: parquet (default), csv, json", "parquet", "csv", "json"),
+				strProp("sql", "SQL SELECT query to export (or a ggsql query when format=html)", true),
+				enumProp("format", "Output format: parquet (default), csv, json, html", "parquet", "csv", "json", "html"),
 				numProp("ttl_minutes", "File lifetime in minutes (0 = server default)"),
 				boolProp("public", "If true, return an auth-free URL (UUID capability token). Requires public exports to be configured on this server."),
 			),
@@ -252,6 +257,85 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 		},
 	)
 
+	// --- ggsql_chart ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "ggsql_chart",
+			Description: "Render a ggsql (Grammar-of-Graphics SQL) chart via the ggvisual sidecar and return a " +
+				"download URL -- never the rendered bytes/pixels themselves, keeping chart output out of context. " +
+				"sql is a plain SELECT; visualise is a ggsql VISUALISE/DRAW/SCALE/FACET/PROJECT/LABEL clause with " +
+				"no FROM (it visualizes the sql result) -- see the ggsql-syntax doc resource " +
+				"(duckdb://docs/ggsql-syntax) for the full grammar. The response also echoes back sql and " +
+				"visualise as plain fields: that's the compact, lossless description of what the chart shows -- " +
+				"prefer reasoning from those over fetching the rendered chart. Requires query permission and the " +
+				"ggvisual sidecar to be configured on this server (returns an error otherwise).",
+			InputSchema: buildSchema(
+				strProp("sql", "Read-only SQL query whose result is the chart's data", true),
+				strProp("visualise", "ggsql VISUALISE clause describing the chart (no FROM)", true),
+				strProp("format", "ggvisual output format (default: vegalite; also: png, svg, ansi, braille, html, and more)", false),
+				numProp("ttl_minutes", "File lifetime in minutes (0 = server default)"),
+				boolProp("public", "If true, return an auth-free URL (UUID capability token). Requires public exports to be configured on this server."),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			if ggsqlHandler == nil {
+				return textResult("Error: ggsql handler not initialized on this server (set ggvisual_service_url in the Caddyfile or DUCKDB_GGVISUAL_SERVICE_URL)"), nil
+			}
+			if exportHandler == nil {
+				return textResult("Error: export handler not initialized"), nil
+			}
+			public := argBool(req, "public", false)
+			if !public && exportHandler.exportsDir == "" {
+				return textResult("Error: export directory not configured on this server (set exports_dir in Caddyfile)"), nil
+			}
+			if public && exportHandler.publicExportsDir == "" {
+				return textResult("Error: public export directory not configured on this server (set DUCKDB_PUBLIC_EXPORTS_DIR)"), nil
+			}
+			sql := argString(req, "sql", "")
+			if strings.TrimSpace(sql) == "" {
+				return textResult("Error: sql argument is required"), nil
+			}
+			visualise := argString(req, "visualise", "")
+			if strings.TrimSpace(visualise) == "" {
+				return textResult("Error: visualise argument is required"), nil
+			}
+			if containsInternalTables(sql) {
+				return textResult("Error: access to internal auth tables is forbidden"), nil
+			}
+			format := argString(req, "format", "vegalite")
+			ttlMinutes := argInt(req, "ttl_minutes", 0)
+
+			body, contentType, err := ggsqlHandler.render(ctx, ggsqlHandler.capSQL(sql), visualise, format)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			resp, err := exportHandler.writeChartArtifact(body, extensionForContentType(contentType, format), format, ttlMinutes, public)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			result := struct {
+				URL       string    `json:"url"`
+				SQL       string    `json:"sql"`
+				Visualise string    `json:"visualise"`
+				Format    string    `json:"format"`
+				SizeBytes int64     `json:"size_bytes"`
+				ExpiresAt time.Time `json:"expires_at"`
+			}{
+				URL:       resp.URL,
+				SQL:       sql,
+				Visualise: visualise,
+				Format:    resp.Format,
+				SizeBytes: resp.SizeBytes,
+				ExpiresAt: resp.ExpiresAt,
+			}
+			b, _ := json.Marshal(result)
+			return textResult(string(b)), nil
+		},
+	)
+
 	// --- list_databases ---
 	srv.AddTool(
 		&mcp.Tool{
@@ -267,6 +351,26 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				SELECT database_name, type, path, is_attached, is_read_only
 				FROM duckdb_databases()
 				ORDER BY database_name
+			`, 200)
+		},
+	)
+
+	// --- list_extensions ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "list_extensions",
+			Description: "List installed/loaded DuckDB extensions with their version. Check this before using any extension-provided function (e.g. textplot, fts, ggsql, lance) to confirm it's actually loaded rather than guessing.",
+			InputSchema: buildSchema(),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			return runQueryTool(dbMgr, `
+				SELECT extension_name, installed, loaded, extension_version
+				FROM duckdb_extensions()
+				WHERE installed OR loaded
+				ORDER BY extension_name
 			`, 200)
 		},
 	)
@@ -309,11 +413,67 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 		},
 	)
 
+	// --- list_macros ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "list_macros",
+			Description: "Compact inventory of available table/scalar macros: name, type, parameters " +
+				"(with types where known), and description. Each macro is also individually callable " +
+				"as its own tool — use this when you want an overview of what's available without " +
+				"paging through the full tool list, or a signature reminder before calling one.",
+			InputSchema: buildSchema(
+				strProp("database", "Database (catalog) name to filter by", false),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			macros, err := discoverMacros(dbMgr)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			database := argString(req, "database", "")
+
+			type macroSummary struct {
+				Name        string   `json:"name"`
+				Database    string   `json:"database,omitempty"`
+				Type        string   `json:"type"`
+				Params      []string `json:"params,omitempty"`
+				ParamTypes  []string `json:"param_types,omitempty"`
+				Description string   `json:"description,omitempty"`
+			}
+			out := make([]macroSummary, 0, len(macros))
+			for _, m := range macros {
+				if database != "" && m.DatabaseName != database {
+					continue
+				}
+				macroType := "table"
+				if m.IsScalar {
+					macroType = "scalar"
+				}
+				out = append(out, macroSummary{
+					Name:        m.Name,
+					Database:    m.DatabaseName,
+					Type:        macroType,
+					Params:      m.Params,
+					ParamTypes:  m.ParamTypes,
+					Description: m.Comment,
+				})
+			}
+			b, err := json.Marshal(map[string]any{"macros": out, "count": len(out)})
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			return textResult(string(b)), nil
+		},
+	)
+
 	// --- describe ---
 	srv.AddTool(
 		&mcp.Tool{
 			Name:        "describe",
-			Description: "Get the column schema for a table or view. Optionally qualify with database and schema for multi-catalog setups.",
+			Description: "Get column names and types for a table or view (compact — no null/key/default/extra columns, use 'schema' for those). Optionally qualify with database and schema for multi-catalog setups.",
 			InputSchema: buildSchema(
 				strProp("table", "Table or view name", true),
 				strProp("database", "Database (catalog) name, e.g. 'diva' or 'main'", false),
@@ -337,7 +497,7 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 			if database != "" && isSimpleIdentifier(database) {
 				target = database + "." + target
 			}
-			return runQueryTool(dbMgr, "DESCRIBE "+target, 500)
+			return runQueryTool(dbMgr, "SELECT column_name, column_type FROM (DESCRIBE "+target+")", 500)
 		},
 	)
 
@@ -1466,8 +1626,8 @@ func isSimpleIdentifier(s string) bool {
 // builtinMCPToolNames is the set of tool names reserved for built-in tools.
 // User macro names that conflict are skipped.
 var builtinMCPToolNames = map[string]bool{
-	"query": true, "execute": true, "export": true,
-	"list_databases": true, "list_tables": true, "describe": true, "database_info": true,
+	"query": true, "execute": true, "export": true, "ggsql_chart": true,
+	"list_databases": true, "list_tables": true, "list_macros": true, "list_extensions": true, "describe": true, "database_info": true,
 	"summarize": true, "schema": true, "value_counts": true, "sample": true,
 	"column_search": true, "row_counts": true, "sample_by_id_range": true,
 	"server_status": true,
