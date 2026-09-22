@@ -77,6 +77,11 @@ type DuckDB struct {
 	// Example: "http://fts-sidecar:8701"
 	FTSServiceURL string `json:"fts_service_url,omitempty"`
 
+	// GgvisualServiceURL is the URL of the ggvisual sidecar service for rendering
+	// ggsql (Grammar-of-Graphics SQL) charts. If empty, the /ggsql endpoint will
+	// not be available. Example: "http://ggvisual:8080"
+	GgvisualServiceURL string `json:"ggvisual_service_url,omitempty"`
+
 	// TrustedUserHeader is the name of the HTTP header that carries a pre-authenticated
 	// identity (e.g. "X-Vouch-User" set by vouch-proxy via forward_auth).
 	// When set, requests with this header bypass API key auth and are looked up
@@ -146,6 +151,7 @@ type DuckDB struct {
 	viewHandler       *handlers.ViewHandler
 	columnsHandler    *handlers.ColumnsHandler
 	ftsHandler        *handlers.FTSHandler
+	ggsqlHandler      *handlers.GgsqlHandler
 	httpserverHandler *handlers.HTTPServerHandler
 	executeHandler    *handlers.ExecuteHandler
 	exportHandler     *handlers.ExportHandler
@@ -341,6 +347,17 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		d.logger.Info("FTS handler initialized", zap.String("service_url", d.FTSServiceURL))
 	}
 
+	// Initialize ggsql handler if the ggvisual sidecar service URL is configured
+	if d.GgvisualServiceURL == "" {
+		if envGgvisualURL := os.Getenv("DUCKDB_GGVISUAL_SERVICE_URL"); envGgvisualURL != "" {
+			d.GgvisualServiceURL = envGgvisualURL
+		}
+	}
+	if d.GgvisualServiceURL != "" {
+		d.ggsqlHandler = handlers.NewGgsqlHandler(d.dbMgr, d.authorizer, d.GgvisualServiceURL, d.AbsoluteMaxRows, d.logger)
+		d.logger.Info("ggsql handler initialized", zap.String("service_url", d.GgvisualServiceURL))
+	}
+
 	d.logger.Info("DuckDB module provisioned",
 		zap.String("route_prefix", d.routePrefix),
 		zap.String("main_db", d.DatabasePath),
@@ -516,6 +533,16 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 		d.ftsHandler.ServeHTTP(w, r)
 		return nil
+	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/ggsql") {
+		// ggsql chart rendering endpoint (requires ggvisual sidecar)
+		if d.ggsqlHandler == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error":"Service Unavailable","message":"ggvisual service not configured. Set ggvisual_service_url in Caddyfile or DUCKDB_GGVISUAL_SERVICE_URL environment variable.","code":503}`))
+			return nil
+		}
+		d.ggsqlHandler.ServeHTTP(w, r)
+		return nil
 	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/query") {
 		// Raw SQL query endpoint
 		d.queryHandler.ServeHTTP(w, r)
@@ -653,6 +680,10 @@ func (d *DuckDB) UnmarshalCaddyfile(dispenser *caddyfile.Dispenser) error {
 				}
 			case "fts_service_url":
 				if !dispenser.Args(&d.FTSServiceURL) {
+					return dispenser.ArgErr()
+				}
+			case "ggvisual_service_url":
+				if !dispenser.Args(&d.GgvisualServiceURL) {
 					return dispenser.ArgErr()
 				}
 			case "trusted_user_header":
