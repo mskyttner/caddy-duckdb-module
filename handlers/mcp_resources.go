@@ -82,6 +82,9 @@ var duckdbFunctionsDoc string
 //go:embed docs/duckdb-domain-meta.md
 var duckdbDomainMetaDoc string
 
+//go:embed docs/ggsql-syntax.md
+var ggsqlSyntaxDoc string
+
 // registerHelpTool registers the built-in help MCP tool backed by the embedded
 // Markdown docs. Call with no topic for a table of contents; call with a
 // section ID or keyword to retrieve matching section content.
@@ -90,6 +93,7 @@ func registerHelpTool(srv *mcp.Server) {
 		parseSections(duckdbSQLDoc, "sql-syntax"),
 		parseSections(duckdbVizDoc, "visualization")...,
 	)
+	sections = append(sections, parseSections(ggsqlSyntaxDoc, "ggsql-syntax")...)
 
 	srv.AddTool(
 		&mcp.Tool{
@@ -98,8 +102,9 @@ func registerHelpTool(srv *mcp.Server) {
 				"Call with no arguments for a table of contents (section IDs and titles). " +
 				"Call with a topic to retrieve that section's content — use the section ID " +
 				"from the table of contents, or any keyword that appears in a section title. " +
-				"Covers DuckDB-friendly SQL features (sql-syntax) and chart query patterns " +
-				"including ASCII textplot (visualization).",
+				"Covers DuckDB-friendly SQL features (sql-syntax), chart query patterns " +
+				"including ASCII textplot (visualization), and the full ggsql " +
+				"VISUALISE/DRAW/SCALE/FACET/PROJECT/LABEL grammar (ggsql-syntax).",
 			InputSchema: buildSchema(
 				strProp("topic", "Section ID or title keyword. Omit to list all sections.", false),
 			),
@@ -126,6 +131,7 @@ func registerHelpTool(srv *mcp.Server) {
 				sb.WriteString("  duckdb://docs/visualization — Chart query patterns\n")
 				sb.WriteString("  duckdb://docs/functions — LIST/STRUCT/MAP/regexp/JSON/QUALIFY reference\n")
 				sb.WriteString("  duckdb://docs/datadomain-meta — COMMENT ON, tags, macro_descriptions, duckdb_*() system catalog\n")
+				sb.WriteString("  duckdb://docs/ggsql-syntax — ggsql VISUALISE/DRAW/SCALE/FACET/PROJECT/LABEL grammar\n")
 				sb.WriteString("(Deployment may provide additional domain-specific resources — call database_info() to list all.)")
 				return textResult(sb.String()), nil
 			}
@@ -150,11 +156,12 @@ func registerHelpTool(srv *mcp.Server) {
 // LLM clients that support resources can fetch these before writing queries
 // to learn DuckDB-specific syntax and best practices.
 //
-// Four resources are always registered from embedded docs:
+// Five resources are always registered from embedded docs:
 //   - duckdb://docs/sql-syntax
 //   - duckdb://docs/visualization
 //   - duckdb://docs/functions
 //   - duckdb://docs/datadomain-meta
+//   - duckdb://docs/ggsql-syntax
 //
 // If docsDir is non-empty, every *.md file found directly in that directory
 // is also registered as duckdb://docs/<stem> (filename without extension).
@@ -209,6 +216,14 @@ func registerDocResources(srv *mcp.Server, docsDir string) []ResourceInfo {
 				"duckdb_functions, duckdb_constraints, duckdb_indexes, duckdb_schemas, duckdb_extensions) " +
 				"with key columns and composite discovery queries.",
 			content: duckdbDomainMetaDoc,
+		},
+		{
+			uri:  "duckdb://docs/ggsql-syntax",
+			name: "ggsql_syntax",
+			description: "ggsql (Grammar-of-Graphics SQL) syntax reference: VISUALISE/DRAW/SCALE/FACET/PROJECT/LABEL " +
+				"clauses, layer types, aggregate settings, and named color palettes — for /duckdb/export " +
+				"(format=html) and /duckdb/ggsql.",
+			content: ggsqlSyntaxDoc,
 		},
 	}
 

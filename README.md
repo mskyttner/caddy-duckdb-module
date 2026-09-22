@@ -181,6 +181,9 @@ If you get CGO-related errors, ensure:
             # Full-text search sidecar URL (optional)
             # fts_service_url http://fts-sidecar:8701
 
+            # ggvisual sidecar URL for ggsql chart rendering (optional; enables /ggsql)
+            # ggvisual_service_url http://ggvisual:8080
+
             # Allowed CORS origins — space-separated, or "*" for all (optional)
             # cors_origins http://localhost:5522 https://myapp.example.com
 
@@ -222,6 +225,7 @@ If you get CGO-related errors, ensure:
 | `temp_directory` | string | *system default* | Directory for temporary files when spilling to disk. Optional. |
 | `init_file` | string | *unset* | SQL file to execute once on startup. Optional. |
 | `fts_service_url` | string | *unset* | Full-text search sidecar URL (e.g. `http://fts:8701`). Optional. |
+| `ggvisual_service_url` | string | *unset* | ggvisual sidecar URL for ggsql chart rendering (e.g. `http://ggvisual:8080`). Required to enable `/ggsql`. Optional. |
 | `cors_origins` | string | *unset* | Space-separated allowed CORS origins, or `*`. Optional. |
 | `trusted_user_header` | string | *unset* | HTTP header carrying a pre-authenticated username (e.g. `X-Vouch-User`). Optional. |
 | `exports_dir` | string | *unset* | Filesystem directory for export files. Required to enable `/export`. |
@@ -324,6 +328,7 @@ All settings can be configured via environment variables:
 | `DUCKDB_TEMP_DIRECTORY` | *(unset)* | Spill directory |
 | `DUCKDB_INIT_FILE` | *(unset)* | SQL file run on startup |
 | `DUCKDB_FTS_SERVICE_URL` | *(unset)* | FTS sidecar URL |
+| `DUCKDB_GGVISUAL_SERVICE_URL` | *(unset)* | ggvisual sidecar URL (required to enable `/ggsql`) |
 | `DUCKDB_CORS_ORIGINS` | *(unset)* | Space-separated allowed origins, or `*` |
 | `DUCKDB_EXPORTS_DIR` | *(unset)* | Directory for export files (required to enable `/export`) |
 | `DUCKDB_EXPORTS_URL` | `<prefix>/exports` | URL prefix for exported files |
@@ -500,6 +505,7 @@ All endpoints are under the configured route prefix (default: `/duckdb`). All re
 | `/docs/` | GET | none | Swagger UI |
 | `/health` | GET | none | Health check |
 | `/find` | GET | key | Full-text search (requires FTS sidecar) |
+| `/ggsql` | POST | key | Render a ggsql chart (requires ggvisual sidecar) |
 
 ### CRUD Operations
 
@@ -701,7 +707,38 @@ curl -X POST http://localhost:8080/duckdb/export \
 ```
 
 Requires the `ggsql` DuckDB extension (pre-installed in the Docker image). See `ggsql docs` or
-`ggsql skill` for the full `VISUALIZE`/`DRAW`/`SCALE`/`FACET`/`LABEL` grammar.
+`ggsql skill` for the full `VISUALIZE`/`DRAW`/`SCALE`/`FACET`/`LABEL` grammar, or the
+`ggsql-syntax` MCP doc resource / `duckdb://docs/ggsql-syntax` for the same reference served by
+this module.
+
+### Chart Rendering Endpoint (`/ggsql`)
+
+`POST /duckdb/ggsql` — like `/export?format=html` above, but for many more output formats
+(Vega-Lite spec, PNG, SVG, ANSI terminal art, and more) via a separate `ggvisual` sidecar
+service, instead of the single `html` writer built into the DuckDB extension. `sql` (a plain
+`SELECT`) and `visualise` (the ggsql `VISUALISE ... DRAW ...` clause, no `FROM`) are separate
+fields — `visualise` describes the chart for whatever `sql` returns:
+
+```bash
+curl -X POST http://localhost:8080/duckdb/ggsql \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql": "SELECT year, revenue FROM sales ORDER BY year",
+    "visualise": "VISUALISE year AS x, revenue AS y DRAW bar",
+    "format": "vegalite"
+  }'
+```
+
+The response's `Content-Type` matches the requested `format` (e.g. `application/json` for
+`vegalite`, `image/png`, `image/svg+xml`, or `text/plain` for `ansi`/`braille` — never
+JSON-wrapped, since JSON string escaping would corrupt raw terminal escape codes). Requires
+`query` permission and the `ggvisual` sidecar to be reachable — set `ggvisual_service_url` in the
+Caddyfile or `DUCKDB_GGVISUAL_SERVICE_URL`, and see `docker-compose.yml`'s commented `ggvisual`
+service block for how to run it. Returns 503 if the sidecar isn't configured or is unreachable
+(safe to retry), or the sidecar's own error category translated to the matching HTTP status
+(400/504/500) if it rejects the query. See `ggsql-syntax` (above) for the shared grammar
+reference.
 
 ### httpserver-Compatible Endpoint
 

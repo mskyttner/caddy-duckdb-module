@@ -165,6 +165,9 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 		"/execute": map[string]interface{}{
 			"post": h.generateExecuteOperation(),
 		},
+		"/ggsql": map[string]interface{}{
+			"post": h.generateGgsqlOperation(),
+		},
 		"/export": map[string]interface{}{
 			"post": h.generateExportOperation(),
 		},
@@ -1477,6 +1480,65 @@ func (h *OpenAPIHandler) generateExecuteOperation() map[string]interface{} {
 			"401": map[string]interface{}{"description": "Unauthorized"},
 			"403": map[string]interface{}{"description": "Forbidden (no execute permission or internal table access)"},
 			"500": map[string]interface{}{"description": "Execution error"},
+		},
+	}
+}
+
+// generateGgsqlOperation generates the POST /ggsql operation spec.
+func (h *OpenAPIHandler) generateGgsqlOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Visualization"},
+		"summary":     "Render a ggsql chart via the ggvisual sidecar",
+		"description": "Runs `sql` (a plain SELECT) against this server's own DuckDB engine, then sends the result to the `ggvisual` sidecar service to render the chart described by `visualise` (a ggsql VISUALISE/DRAW/SCALE/FACET/PROJECT/LABEL clause — see the `ggsql-syntax` MCP doc resource or `duckdb://docs/ggsql-syntax`). Requires `query` permission. Requires the `ggvisual_service_url` Caddyfile directive or `DUCKDB_GGVISUAL_SERVICE_URL` environment variable to be configured — returns 503 otherwise. For a single self-contained HTML chart file instead, see `POST /export` with `format=html`.",
+		"operationId": "renderGgsqlChart",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"requestBody": map[string]interface{}{
+			"required": true,
+			"content": map[string]interface{}{
+				"application/json": map[string]interface{}{
+					"schema": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"sql": map[string]interface{}{
+								"type":        "string",
+								"description": "Read-only SQL query whose result is the chart's data",
+								"example":     "SELECT year, revenue FROM sales ORDER BY year",
+							},
+							"visualise": map[string]interface{}{
+								"type":        "string",
+								"description": "ggsql VISUALISE clause describing the chart (no FROM — it visualizes the sql result)",
+								"example":     "VISUALISE year AS x, revenue AS y DRAW bar",
+							},
+							"format": map[string]interface{}{
+								"type":        "string",
+								"default":     "vegalite",
+								"description": "Output format understood by the ggvisual sidecar (e.g. vegalite, png, svg, ansi, braille). See GET <ggvisual-service-url>/formats for the full list the deployed sidecar supports.",
+								"example":     "vegalite",
+							},
+						},
+						"required": []string{"sql", "visualise"},
+					},
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Rendered chart, in whichever Content-Type the requested `format` produces (e.g. application/json for vegalite, image/png, image/svg+xml, or text/plain for ansi/braille — never wrapped in JSON, to avoid corrupting escape codes).",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{"type": "object"},
+					},
+				},
+			},
+			"400": map[string]interface{}{"description": "Bad request (missing sql/visualise, invalid SQL, or ggvisual rejected the ggsql query)"},
+			"401": map[string]interface{}{"description": "Unauthorized"},
+			"403": map[string]interface{}{"description": "Forbidden (no query permission, or internal table access)"},
+			"405": map[string]interface{}{"description": "Method not allowed (use POST)"},
+			"500": map[string]interface{}{"description": "Internal error rendering the chart"},
+			"503": map[string]interface{}{"description": "ggvisual sidecar not configured, unavailable, or interrupted mid-request (safe to retry)"},
+			"504": map[string]interface{}{"description": "ggvisual sidecar timed out rendering the chart"},
 		},
 	}
 }
