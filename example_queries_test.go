@@ -1023,6 +1023,22 @@ func TestExampleQueries_MCP_ListTables(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_MCP_ListExtensions(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 31, "tools/call", map[string]interface{}{
+		"name":      "list_extensions",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "extension_name") {
+		t.Errorf("expected 'extension_name' in list_extensions result, got: %s", text)
+	}
+}
+
 func TestExampleQueries_MCP_Describe(t *testing.T) {
 	d, cleanup := setupExampleModule(t)
 	defer cleanup()
@@ -1490,6 +1506,64 @@ func TestExampleQueries_MCP_TableMacro_Registered(t *testing.T) {
 	text := content[0].(map[string]interface{})["text"].(string)
 	if !strings.Contains(text, "label") {
 		t.Errorf("expected 'label' column in macro result, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_ListMacros(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	_, err := d.dbMgr.ExecMain(`
+		CREATE OR REPLACE MACRO top_items(n := 5) AS TABLE
+		  SELECT range AS id, 'item'||range AS label FROM range(1, n+1);
+	`)
+	if err != nil {
+		t.Fatalf("create macro: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`COMMENT ON MACRO TABLE top_items IS 'Top N synthetic items'`); err != nil {
+		t.Fatalf("comment on macro: %v", err)
+	}
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, d.logger, 200, "", "")
+
+	resp := mcpCall(t, d, 30, "tools/call", map[string]interface{}{
+		"name":      "list_macros",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+
+	var out struct {
+		Macros []struct {
+			Name        string   `json:"name"`
+			Type        string   `json:"type"`
+			Params      []string `json:"params"`
+			Description string   `json:"description"`
+		} `json:"macros"`
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("failed to parse list_macros response: %v\nbody: %s", err, text)
+	}
+
+	var found bool
+	for _, m := range out.Macros {
+		if m.Name != "top_items" {
+			continue
+		}
+		found = true
+		if m.Type != "table" {
+			t.Errorf("expected type 'table', got %q", m.Type)
+		}
+		if len(m.Params) != 1 || m.Params[0] != "n" {
+			t.Errorf("expected params [n], got %v", m.Params)
+		}
+		if m.Description != "Top N synthetic items" {
+			t.Errorf("expected description from COMMENT ON MACRO, got %q", m.Description)
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'top_items' in list_macros output, got: %s", text)
 	}
 }
 

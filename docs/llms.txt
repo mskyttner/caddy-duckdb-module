@@ -76,6 +76,8 @@ Content-Type: application/json
 | `database_info` | query | Tables, schemas, macros, extensions; includes `estimated_row_count` per table and `export_base_url` when public exports are configured |
 | `list_databases` | query | List all attached databases (catalogs) with name, type, path, and read-only status |
 | `list_tables` | query | Tables (and optionally views) with column counts |
+| `list_macros` | query | Compact macro inventory: name, type, parameters, description — without paging through the full tool list |
+| `list_extensions` | query | Installed/loaded DuckDB extensions with version — check before using any extension-provided function |
 | `describe` | query | Column names and types for a table or view |
 | `schema` | query | Tables + column names/types — filter with `table_pattern`, compact dict with `compact=true` |
 | `summarize` | query | Per-column stats (min/max/avg/null%/approx_unique) via DuckDB SUMMARIZE |

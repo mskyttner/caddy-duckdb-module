@@ -153,7 +153,10 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 					"(2) never use SELECT * — project only the columns you need, "+
 					"(3) place the smallest/most selective table on the left side of each join. "+
 					"Pattern: WITH ids AS (SELECT id FROM small_table WHERE filter) "+
-					"SELECT specific_cols FROM ids JOIN large_table USING (id).", maxRows),
+					"SELECT specific_cols FROM ids JOIN large_table USING (id). "+
+					"For textplot charts (tp_bar/tp_sparkline/tp_density), always pass \"on\" and \"off\" "+
+					"named parameters (e.g. \"on\" := '█', \"off\" := '░') to get Unicode block glyphs "+
+					"instead of emoji — see duckdb://docs/visualization for details.", maxRows),
 			InputSchema: buildSchema(
 				strProp("sql", "Read-only SQL statement", true),
 				numProp("max_rows", "Max rows to return"),
@@ -271,6 +274,26 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 		},
 	)
 
+	// --- list_extensions ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "list_extensions",
+			Description: "List installed/loaded DuckDB extensions with their version. Check this before using any extension-provided function (e.g. textplot, fts, ggsql, lance) to confirm it's actually loaded rather than guessing.",
+			InputSchema: buildSchema(),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			return runQueryTool(dbMgr, `
+				SELECT extension_name, installed, loaded, extension_version
+				FROM duckdb_extensions()
+				WHERE installed OR loaded
+				ORDER BY extension_name
+			`, 200)
+		},
+	)
+
 	// --- list_tables ---
 	srv.AddTool(
 		&mcp.Tool{
@@ -309,11 +332,67 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 		},
 	)
 
+	// --- list_macros ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "list_macros",
+			Description: "Compact inventory of available table/scalar macros: name, type, parameters " +
+				"(with types where known), and description. Each macro is also individually callable " +
+				"as its own tool — use this when you want an overview of what's available without " +
+				"paging through the full tool list, or a signature reminder before calling one.",
+			InputSchema: buildSchema(
+				strProp("database", "Database (catalog) name to filter by", false),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			macros, err := discoverMacros(dbMgr)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			database := argString(req, "database", "")
+
+			type macroSummary struct {
+				Name        string   `json:"name"`
+				Database    string   `json:"database,omitempty"`
+				Type        string   `json:"type"`
+				Params      []string `json:"params,omitempty"`
+				ParamTypes  []string `json:"param_types,omitempty"`
+				Description string   `json:"description,omitempty"`
+			}
+			out := make([]macroSummary, 0, len(macros))
+			for _, m := range macros {
+				if database != "" && m.DatabaseName != database {
+					continue
+				}
+				macroType := "table"
+				if m.IsScalar {
+					macroType = "scalar"
+				}
+				out = append(out, macroSummary{
+					Name:        m.Name,
+					Database:    m.DatabaseName,
+					Type:        macroType,
+					Params:      m.Params,
+					ParamTypes:  m.ParamTypes,
+					Description: m.Comment,
+				})
+			}
+			b, err := json.Marshal(map[string]any{"macros": out, "count": len(out)})
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			return textResult(string(b)), nil
+		},
+	)
+
 	// --- describe ---
 	srv.AddTool(
 		&mcp.Tool{
 			Name:        "describe",
-			Description: "Get the column schema for a table or view. Optionally qualify with database and schema for multi-catalog setups.",
+			Description: "Get column names and types for a table or view (compact — no null/key/default/extra columns, use 'schema' for those). Optionally qualify with database and schema for multi-catalog setups.",
 			InputSchema: buildSchema(
 				strProp("table", "Table or view name", true),
 				strProp("database", "Database (catalog) name, e.g. 'diva' or 'main'", false),
@@ -337,7 +416,7 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 			if database != "" && isSimpleIdentifier(database) {
 				target = database + "." + target
 			}
-			return runQueryTool(dbMgr, "DESCRIBE "+target, 500)
+			return runQueryTool(dbMgr, "SELECT column_name, column_type FROM (DESCRIBE "+target+")", 500)
 		},
 	)
 
@@ -1467,7 +1546,7 @@ func isSimpleIdentifier(s string) bool {
 // User macro names that conflict are skipped.
 var builtinMCPToolNames = map[string]bool{
 	"query": true, "execute": true, "export": true,
-	"list_databases": true, "list_tables": true, "describe": true, "database_info": true,
+	"list_databases": true, "list_tables": true, "list_macros": true, "list_extensions": true, "describe": true, "database_info": true,
 	"summarize": true, "schema": true, "value_counts": true, "sample": true,
 	"column_search": true, "row_counts": true, "sample_by_id_range": true,
 	"server_status": true,

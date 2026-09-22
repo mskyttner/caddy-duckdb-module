@@ -739,6 +739,8 @@ Available MCP tools:
 | `execute` | Run write SQL (requires `can_execute` permission) |
 | `export` | Run SQL → server file → return URL (requires `exports_dir`) |
 | `list_tables` | List all non-internal tables |
+| `list_macros` | Compact macro inventory: name, type, parameters, description |
+| `list_extensions` | Installed/loaded DuckDB extensions with version |
 | `describe` | Column schema for a table or view |
 | `database_info` | Database statistics and metadata, including estimated row counts and export base URL |
 | `schema` | Compact multi-table schema — use `table_pattern` to filter |
