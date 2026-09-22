@@ -28,12 +28,20 @@
 #   DUCKDB_MAX_ROWS_PER_PAGE=100
 #   DUCKDB_ABSOLUTE_MAX_ROWS=10000
 #   DUCKDB_FTS_SERVICE_URL=http://fts-sidecar:8701  (for full-text search)
+#   DUCKDB_GGVISUAL_SERVICE_URL=http://ggvisual:8080 (for ggsql chart rendering; not yet
+#                                                      consumed by the module itself -- see
+#                                                      ggsql-endpoint.md for the client work
+#                                                      still needed)
 #   DUCKDB_CORS_ORIGINS=http://localhost:5522        (space-separated; use * for all origins)
 #
 # FTS Sidecar environment variables:
 #   FTS_PORT=8701
 #   FTS_INDEX_PATH=/data/fts
 #   FTS_LOG_LEVEL=info
+#
+# ggvisual sidecar: no service-specific env vars (its flags are set via the container's own
+# CMD/ENTRYPOINT -- see ../ggsql/cmd/ggvisual). Build the image first (not published to a
+# registry): cd ../ggsql && podman build --target service -t localhost/ggvisual:latest -f Containerfile .
 
 services:
   caddy-duckdb:
@@ -62,6 +70,9 @@ services:
       # - DUCKDB_ABSOLUTE_MAX_ROWS=10000
       # FTS sidecar connection (uncomment to enable /find endpoint)
       # - DUCKDB_FTS_SERVICE_URL=http://fts-sidecar:8701
+      # ggvisual sidecar connection (ggsql chart rendering -- documented for the compose
+      # network wiring; not yet read by the module, see ggsql-endpoint.md)
+      # - DUCKDB_GGVISUAL_SERVICE_URL=http://ggvisual:8080
       # CORS origins for browser clients like duck-ui (uncomment and set as needed)
       - DUCKDB_CORS_ORIGINS=http://localhost:5522
     restart: unless-stopped
@@ -110,6 +121,35 @@ services:
   #         memory: 1G
   #       reservations:
   #         memory: 256M
+
+  # ggvisual Sidecar Service (optional - uncomment to enable ggsql chart rendering)
+  # Provides POST /render, POST /validate, GET /formats, GET /health, GET /version for
+  # rendering ggsql (Grammar-of-Graphics SQL) visualizations -- see ggsql-endpoint.md.
+  # Not yet consumed by this module's Go code (no HTTP client wired up); this block only
+  # makes the service reachable on the compose network for that follow-on work.
+  # Build first (not published to a registry):
+  #   cd ../ggsql && podman build --target service -t localhost/ggvisual:latest -f Containerfile .
+  # ggvisual:
+  #   image: localhost/ggvisual:latest
+  #   container_name: ggvisual
+  #   environment:
+  #     - TZ=UTC
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 10s
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 2G
+  #       reservations:
+  #         memory: 512M
+  #   # No `ports:` entry -- reached only by service name (http://ggvisual:8080) on the
+  #   # compose network, never published to the host. Matches ggsql-endpoint.md's "no
+  #   # separate auth surface" stance: this module is the only intended caller.
 
 volumes:
   duckdb-data:
