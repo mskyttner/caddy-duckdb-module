@@ -333,9 +333,6 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		d.logger.Info("Import handler initialized", zap.String("imports_dir", d.ImportsDir))
 	}
 
-	// Initialize MCP handler
-	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.importHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir, d.PublicExportsURL)
-
 	// Initialize FTS handler if service URL is configured
 	if d.FTSServiceURL == "" {
 		if envFTSURL := os.Getenv("DUCKDB_FTS_SERVICE_URL"); envFTSURL != "" {
@@ -347,7 +344,8 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		d.logger.Info("FTS handler initialized", zap.String("service_url", d.FTSServiceURL))
 	}
 
-	// Initialize ggsql handler if the ggvisual sidecar service URL is configured
+	// Initialize ggsql handler if the ggvisual sidecar service URL is configured.
+	// Must happen before NewMCPHandler, which registers the ggsql_chart tool against it.
 	if d.GgvisualServiceURL == "" {
 		if envGgvisualURL := os.Getenv("DUCKDB_GGVISUAL_SERVICE_URL"); envGgvisualURL != "" {
 			d.GgvisualServiceURL = envGgvisualURL
@@ -357,6 +355,9 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		d.ggsqlHandler = handlers.NewGgsqlHandler(d.dbMgr, d.authorizer, d.GgvisualServiceURL, d.AbsoluteMaxRows, d.logger)
 		d.logger.Info("ggsql handler initialized", zap.String("service_url", d.GgvisualServiceURL))
 	}
+
+	// Initialize MCP handler
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, d.importHandler, d.ggsqlHandler, d.logger, d.MaxMCPRows, d.MCPDocsDir, d.PublicExportsURL)
 
 	d.logger.Info("DuckDB module provisioned",
 		zap.String("route_prefix", d.routePrefix),

@@ -208,6 +208,37 @@ func (h *ExportHandler) runExport(sqlQuery, format string, ttlMinutes int, publi
 	return h.finalizeExport(filePath, filename, format, targetURL, rowCount, public, ttl)
 }
 
+// writeChartArtifact materializes pre-rendered chart bytes (from the ggsql_chart MCP
+// tool) as a new export file, reusing the same exports_dir/public_exports_dir, UUID
+// filename, and expiry bookkeeping as runExport -- so chart URLs expire and are served
+// identically to every other export format.
+func (h *ExportHandler) writeChartArtifact(data []byte, ext, format string, ttlMinutes int, public bool) (*ExportResponse, error) {
+	targetDir := h.exportsDir
+	targetURL := h.exportsURL
+	if public {
+		if h.publicExportsDir == "" {
+			return nil, fmt.Errorf("public export directory not configured (set DUCKDB_PUBLIC_EXPORTS_DIR)")
+		}
+		targetDir = h.publicExportsDir
+		targetURL = h.publicExportsURL
+	} else if h.exportsDir == "" {
+		return nil, fmt.Errorf("export directory not configured")
+	}
+	ttl := h.defaultTTL
+	if ttlMinutes > 0 {
+		ttl = time.Duration(ttlMinutes) * time.Minute
+	}
+	if err := os.MkdirAll(targetDir, 0750); err != nil {
+		return nil, fmt.Errorf("failed to create exports directory: %w", err)
+	}
+	filename := uuid.New().String() + "." + ext
+	filePath := filepath.Join(targetDir, filename)
+	if err := os.WriteFile(filePath, data, 0640); err != nil {
+		return nil, fmt.Errorf("failed to write chart file: %w", err)
+	}
+	return h.finalizeExport(filePath, filename, format, targetURL, 0, public, ttl)
+}
+
 // finalizeExport stats the written file, records its expiry, and builds the response.
 // Shared by every export format's write path in runExport.
 func (h *ExportHandler) finalizeExport(filePath, filename, format, targetURL string, rowCount int64, public bool, ttl time.Duration) (*ExportResponse, error) {

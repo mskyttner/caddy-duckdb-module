@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,16 +67,144 @@ type ggvisualErrorEnvelope struct {
 }
 
 // categoryToStatus maps ggvisual's error category to this module's own HTTP
-// status, per ggsql-endpoint.md's explicit mapping.
+// status, per ggsql-endpoint.md's explicit mapping. "unavailable" is not a
+// category ggvisual itself emits -- render() uses it for transport-level
+// failures (sidecar unreachable/interrupted), which map to 503 like any other
+// upstream-down condition.
 func categoryToStatus(category string) int {
 	switch category {
 	case "bad_ggsql", "bad_sql":
 		return http.StatusBadRequest
 	case "timeout":
 		return http.StatusGatewayTimeout
+	case "unavailable":
+		return http.StatusServiceUnavailable
 	default: // "internal" and anything unrecognized
 		return http.StatusInternalServerError
 	}
+}
+
+// ggsqlRenderError is a categorized render failure, from either running the
+// local SQL/CSV encoding step or from ggvisual's own structured error
+// envelope. Callers (the REST handler and the ggsql_chart MCP tool) each
+// render it their own way -- an HTTP status for one, a chat-friendly message
+// for the other -- without duplicating the category->status mapping.
+type ggsqlRenderError struct {
+	category string
+	message  string
+}
+
+func (e *ggsqlRenderError) Error() string { return e.message }
+
+// capSQL wraps sqlQuery in a LIMIT clause per absoluteMaxRows, if configured.
+// Shared by the REST handler and the ggsql_chart MCP tool.
+func (h *GgsqlHandler) capSQL(sqlQuery string) string {
+	if h.absoluteMaxRows > 0 {
+		return fmt.Sprintf("SELECT * FROM (%s) AS ggsql_capped LIMIT %d", sqlQuery, h.absoluteMaxRows)
+	}
+	return sqlQuery
+}
+
+// render runs sqlQuery against this module's own DuckDB engine, sends the
+// result as CSV to the ggvisual sidecar alongside the visualise/format
+// parameters, and returns the rendered chart bytes and the Content-Type
+// ggvisual reported. Shared by ServeHTTP (REST) and the ggsql_chart MCP tool.
+func (h *GgsqlHandler) render(ctx context.Context, sqlQuery, visualise, format string) ([]byte, string, error) {
+	if format == "" {
+		format = "vegalite"
+	}
+
+	rows, err := h.dbMgr.QueryMain(sqlQuery)
+	if err != nil {
+		return nil, "", &ggsqlRenderError{category: "bad_sql", message: fmt.Sprintf("Query failed: %s", err.Error())}
+	}
+	defer rows.Close()
+
+	var csvBuf bytes.Buffer
+	if _, err := formats.WriteCSVToWriter(&csvBuf, rows); err != nil {
+		return nil, "", &ggsqlRenderError{category: "internal", message: "Failed to prepare query result for rendering: " + err.Error()}
+	}
+
+	proxyURL, err := url.Parse(h.serviceURL + "/render")
+	if err != nil {
+		return nil, "", &ggsqlRenderError{category: "internal", message: "Internal server error: " + err.Error()}
+	}
+	q := proxyURL.Query()
+	q.Set("visual", visualise)
+	q.Set("format", format)
+	proxyURL.RawQuery = q.Encode()
+
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL.String(), &csvBuf)
+	if err != nil {
+		return nil, "", &ggsqlRenderError{category: "internal", message: "Internal server error: " + err.Error()}
+	}
+	proxyReq.Header.Set("Content-Type", "text/csv")
+
+	resp, err := h.client.Do(proxyReq)
+	if err != nil {
+		// Covers connection refused/reset and context deadline exceeded alike --
+		// per persistent-service.md's "Graceful shutdown" section, a ggvisual
+		// redeploy mid-request produces exactly this (a transport error, no
+		// envelope), and the caller should treat it as retriable rather than as
+		// evidence of a bad request.
+		return nil, "", &ggsqlRenderError{category: "unavailable", message: "ggvisual sidecar unavailable or interrupted -- safe to retry"}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", &ggsqlRenderError{category: "internal", message: "Failed to read ggvisual response: " + err.Error()}
+	}
+
+	if resp.StatusCode >= 400 {
+		var envelope ggvisualErrorEnvelope
+		if err := json.Unmarshal(body, &envelope); err != nil || envelope.Error.Category == "" {
+			// Unrecognized error shape -- fail safe rather than guessing.
+			return nil, "", &ggsqlRenderError{category: "internal", message: "ggvisual returned an unrecognized error"}
+		}
+		return nil, "", &ggsqlRenderError{category: envelope.Error.Category, message: envelope.Error.Message}
+	}
+
+	return body, resp.Header.Get("Content-Type"), nil
+}
+
+// contentTypeExtensions maps ggvisual's known Content-Type responses to a file
+// extension, verified directly against a running ggvisual instance across all
+// 19 of its /formats entries (2026-09-22).
+var contentTypeExtensions = map[string]string{
+	"application/json": "json",
+	"text/html":        "html",
+	"image/png":        "png",
+	"image/svg+xml":    "svg",
+	"text/plain":       "txt",
+}
+
+// extensionForContentType picks a file extension for a materialized chart
+// artifact from ggvisual's response Content-Type, falling back to a sanitized
+// form of the requested ggsql format name for any Content-Type not in
+// contentTypeExtensions (e.g. ggvisual's "url" format, which returns a plain
+// text URL as application/octet-stream) -- defensive against ggvisual's
+// format list evolving independently of this repo.
+func extensionForContentType(contentType, format string) string {
+	ct := contentType
+	if idx := strings.Index(ct, ";"); idx >= 0 {
+		ct = strings.TrimSpace(ct[:idx])
+	}
+	if ext, ok := contentTypeExtensions[ct]; ok {
+		return ext
+	}
+	var b strings.Builder
+	for _, r := range strings.ToLower(format) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "bin"
+	}
+	return b.String()
 }
 
 // ServeHTTP handles POST /duckdb/ggsql.
@@ -120,96 +249,33 @@ func (h *GgsqlHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, "Access to internal auth tables is forbidden", http.StatusForbidden)
 		return
 	}
-	format := req.Format
-	if format == "" {
-		format = "vegalite"
-	}
-
-	sqlQuery := req.SQL
-	if h.absoluteMaxRows > 0 {
-		sqlQuery = fmt.Sprintf("SELECT * FROM (%s) AS ggsql_capped LIMIT %d", sqlQuery, h.absoluteMaxRows)
-	}
-
-	rows, err := h.dbMgr.QueryMain(sqlQuery)
-	if err != nil {
-		h.sendError(w, fmt.Sprintf("Query failed: %s", err.Error()), http.StatusBadRequest)
-		return
-	}
-	defer rows.Close()
-
-	var csvBuf bytes.Buffer
-	if _, err := formats.WriteCSVToWriter(&csvBuf, rows); err != nil {
-		h.logger.Error("Failed to write CSV for ggvisual", zap.Error(err), zap.String("request_id", requestID))
-		h.sendError(w, "Failed to prepare query result for rendering", http.StatusInternalServerError)
-		return
-	}
-
-	proxyURL, err := url.Parse(h.serviceURL + "/render")
-	if err != nil {
-		h.logger.Error("Failed to parse ggvisual service URL", zap.Error(err), zap.String("request_id", requestID))
-		h.sendError(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	q := proxyURL.Query()
-	q.Set("visual", req.Visualise)
-	q.Set("format", format)
-	proxyURL.RawQuery = q.Encode()
-
-	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, proxyURL.String(), &csvBuf)
-	if err != nil {
-		h.logger.Error("Failed to create ggvisual request", zap.Error(err), zap.String("request_id", requestID))
-		h.sendError(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	proxyReq.Header.Set("Content-Type", "text/csv")
-	proxyReq.Header.Set("X-Request-ID", requestID)
 
 	startTime := time.Now()
-	resp, err := h.client.Do(proxyReq)
+	body, contentType, err := h.render(r.Context(), h.capSQL(req.SQL), req.Visualise, req.Format)
 	if err != nil {
-		// Covers connection refused/reset and context deadline exceeded alike --
-		// per persistent-service.md's "Graceful shutdown" section, a ggvisual
-		// redeploy mid-request produces exactly this (a transport error, no
-		// envelope), and the caller should treat it as retriable rather than as
-		// evidence of a bad request.
-		h.logger.Error("ggvisual request failed", zap.Error(err), zap.String("request_id", requestID))
-		h.sendError(w, "ggvisual sidecar unavailable or interrupted -- safe to retry", http.StatusServiceUnavailable)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		h.logger.Error("Failed to read ggvisual response", zap.Error(err), zap.String("request_id", requestID))
-		h.sendError(w, "Failed to read ggvisual response", http.StatusInternalServerError)
+		var rerr *ggsqlRenderError
+		if errors.As(err, &rerr) {
+			h.sendError(w, rerr.message, categoryToStatus(rerr.category))
+		} else {
+			h.logger.Error("ggsql render failed", zap.Error(err), zap.String("request_id", requestID))
+			h.sendError(w, "Internal server error", http.StatusInternalServerError)
+		}
 		return
 	}
 
 	h.logger.Debug("ggvisual request completed",
-		zap.Int("status", resp.StatusCode),
 		zap.Duration("duration", time.Since(startTime)),
 		zap.String("request_id", requestID),
 	)
 
-	if resp.StatusCode >= 400 {
-		var envelope ggvisualErrorEnvelope
-		if err := json.Unmarshal(body, &envelope); err != nil || envelope.Error.Category == "" {
-			// Unrecognized error shape -- fail safe rather than guessing.
-			h.sendError(w, "ggvisual returned an unrecognized error", http.StatusInternalServerError)
-			return
-		}
-		h.sendError(w, envelope.Error.Message, categoryToStatus(envelope.Error.Category))
-		return
+	// Relay the response Content-Type and body byte-for-byte. Never re-wrap
+	// this in JSON -- ansi/braille formats contain raw escape codes that JSON
+	// string-escaping would corrupt (confirmed independently twice: via Go's
+	// json.Marshal, and via ggsql-endpoint.md's own curl/xxd test).
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
 	}
-
-	// Success: relay the response Content-Type and body byte-for-byte. Never
-	// re-wrap this in JSON -- ansi/braille formats contain raw escape codes
-	// that JSON string-escaping would corrupt (confirmed independently twice:
-	// via Go's json.Marshal, and via ggsql-endpoint.md's own curl/xxd test).
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(http.StatusOK)
 	w.Write(body)
 }
 

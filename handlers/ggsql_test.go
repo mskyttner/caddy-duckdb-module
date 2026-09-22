@@ -226,6 +226,28 @@ func TestGgsqlHandler_ErrorEnvelope_CategoryMapping(t *testing.T) {
 	}
 }
 
+func TestExtensionForContentType(t *testing.T) {
+	cases := []struct {
+		contentType string
+		format      string
+		want        string
+	}{
+		{"application/json", "vegalite", "json"},
+		{"text/html; charset=utf-8", "html", "html"},
+		{"image/png", "png", "png"},
+		{"image/svg+xml", "svg", "svg"},
+		{"text/plain; charset=utf-8", "ansi", "txt"},
+		{"application/octet-stream", "url", "url"},
+		{"", "xterm-page", "xterm-page"},
+		{"", "", "bin"},
+	}
+	for _, tc := range cases {
+		if got := extensionForContentType(tc.contentType, tc.format); got != tc.want {
+			t.Errorf("extensionForContentType(%q, %q) = %q, want %q", tc.contentType, tc.format, got, tc.want)
+		}
+	}
+}
+
 func TestGgsqlHandler_SidecarUnreachable(t *testing.T) {
 	// Point at a URL nothing is listening on.
 	handler, cleanup := setupGgsqlHandler(t, "http://127.0.0.1:1")

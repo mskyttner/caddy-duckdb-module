@@ -23,6 +23,7 @@ import (
 //   - query(sql, max_rows?)                read-only SQL, result capped at maxRows
 //   - execute(sql)                         write SQL, requires OperationExecute
 //   - export(sql, format?, ttl?)           write result to file, returns URL
+//   - ggsql_chart(sql, visualise, format?) render a ggsql chart via ggvisual, returns URL
 //   - list_tables(schema?, include_views?)
 //   - describe(table)
 //   - database_info()
@@ -47,6 +48,7 @@ func NewMCPHandler(
 	authorizer *auth.Authorizer,
 	exportHandler *ExportHandler,
 	importHandler *ImportHandler,
+	ggsqlHandler *GgsqlHandler,
 	logger *zap.Logger,
 	maxRows int,
 	docsDir string,
@@ -251,6 +253,85 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				return textResult("Error: " + err.Error()), nil
 			}
 			b, _ := json.Marshal(resp)
+			return textResult(string(b)), nil
+		},
+	)
+
+	// --- ggsql_chart ---
+	srv.AddTool(
+		&mcp.Tool{
+			Name: "ggsql_chart",
+			Description: "Render a ggsql (Grammar-of-Graphics SQL) chart via the ggvisual sidecar and return a " +
+				"download URL -- never the rendered bytes/pixels themselves, keeping chart output out of context. " +
+				"sql is a plain SELECT; visualise is a ggsql VISUALISE/DRAW/SCALE/FACET/PROJECT/LABEL clause with " +
+				"no FROM (it visualizes the sql result) -- see the ggsql-syntax doc resource " +
+				"(duckdb://docs/ggsql-syntax) for the full grammar. The response also echoes back sql and " +
+				"visualise as plain fields: that's the compact, lossless description of what the chart shows -- " +
+				"prefer reasoning from those over fetching the rendered chart. Requires query permission and the " +
+				"ggvisual sidecar to be configured on this server (returns an error otherwise).",
+			InputSchema: buildSchema(
+				strProp("sql", "Read-only SQL query whose result is the chart's data", true),
+				strProp("visualise", "ggsql VISUALISE clause describing the chart (no FROM)", true),
+				strProp("format", "ggvisual output format (default: vegalite; also: png, svg, ansi, braille, html, and more)", false),
+				numProp("ttl_minutes", "File lifetime in minutes (0 = server default)"),
+				boolProp("public", "If true, return an auth-free URL (UUID capability token). Requires public exports to be configured on this server."),
+			),
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if ok, res := checkPerm(req, auth.OperationQuery); !ok {
+				return res, nil
+			}
+			if ggsqlHandler == nil {
+				return textResult("Error: ggsql handler not initialized on this server (set ggvisual_service_url in the Caddyfile or DUCKDB_GGVISUAL_SERVICE_URL)"), nil
+			}
+			if exportHandler == nil {
+				return textResult("Error: export handler not initialized"), nil
+			}
+			public := argBool(req, "public", false)
+			if !public && exportHandler.exportsDir == "" {
+				return textResult("Error: export directory not configured on this server (set exports_dir in Caddyfile)"), nil
+			}
+			if public && exportHandler.publicExportsDir == "" {
+				return textResult("Error: public export directory not configured on this server (set DUCKDB_PUBLIC_EXPORTS_DIR)"), nil
+			}
+			sql := argString(req, "sql", "")
+			if strings.TrimSpace(sql) == "" {
+				return textResult("Error: sql argument is required"), nil
+			}
+			visualise := argString(req, "visualise", "")
+			if strings.TrimSpace(visualise) == "" {
+				return textResult("Error: visualise argument is required"), nil
+			}
+			if containsInternalTables(sql) {
+				return textResult("Error: access to internal auth tables is forbidden"), nil
+			}
+			format := argString(req, "format", "vegalite")
+			ttlMinutes := argInt(req, "ttl_minutes", 0)
+
+			body, contentType, err := ggsqlHandler.render(ctx, ggsqlHandler.capSQL(sql), visualise, format)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			resp, err := exportHandler.writeChartArtifact(body, extensionForContentType(contentType, format), format, ttlMinutes, public)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			result := struct {
+				URL       string    `json:"url"`
+				SQL       string    `json:"sql"`
+				Visualise string    `json:"visualise"`
+				Format    string    `json:"format"`
+				SizeBytes int64     `json:"size_bytes"`
+				ExpiresAt time.Time `json:"expires_at"`
+			}{
+				URL:       resp.URL,
+				SQL:       sql,
+				Visualise: visualise,
+				Format:    resp.Format,
+				SizeBytes: resp.SizeBytes,
+				ExpiresAt: resp.ExpiresAt,
+			}
+			b, _ := json.Marshal(result)
 			return textResult(string(b)), nil
 		},
 	)
@@ -1545,7 +1626,7 @@ func isSimpleIdentifier(s string) bool {
 // builtinMCPToolNames is the set of tool names reserved for built-in tools.
 // User macro names that conflict are skipped.
 var builtinMCPToolNames = map[string]bool{
-	"query": true, "execute": true, "export": true,
+	"query": true, "execute": true, "export": true, "ggsql_chart": true,
 	"list_databases": true, "list_tables": true, "list_macros": true, "list_extensions": true, "describe": true, "database_info": true,
 	"summarize": true, "schema": true, "value_counts": true, "sample": true,
 	"column_search": true, "row_counts": true, "sample_by_id_range": true,

@@ -775,6 +775,7 @@ Available MCP tools:
 | `query` | Run read-only SQL, returns up to `max_mcp_rows` rows (default: 500) |
 | `execute` | Run write SQL (requires `can_execute` permission) |
 | `export` | Run SQL → server file → return URL (requires `exports_dir`) |
+| `ggsql_chart` | Render a ggsql chart via the ggvisual sidecar → server file → return URL (requires `ggvisual_service_url`) |
 | `list_tables` | List all non-internal tables |
 | `list_macros` | Compact macro inventory: name, type, parameters, description |
 | `list_extensions` | Installed/loaded DuckDB extensions with version |
