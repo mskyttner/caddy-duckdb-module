@@ -89,6 +89,14 @@ FROM t SELECT age, sum(score) GROUP BY ALL ORDER BY ALL;
 ```
 Orders by all selected columns left to right. `ORDER BY ALL DESC` reverses.
 
+### LIMIT with a percentage
+```sql
+FROM my_table SELECT * LIMIT 10%;
+```
+Returns roughly 10% of the rows rather than a fixed count. Without an `ORDER BY`, which rows
+come back is arbitrary — combine with `ORDER BY` for a deterministic top-N% rather than a random
+sample (for actual random sampling, use `USING SAMPLE` instead, which is designed for that).
+
 ### SELECT * EXCLUDE
 ```sql
 FROM my_table SELECT * EXCLUDE (col1, col2);
@@ -354,6 +362,16 @@ FROM cached WHERE ...;
 FROM read_parquet('parts/*.parquet', union_by_name=true);
 ```
 `union_by_name=true` aligns columns by name rather than position when schemas differ.
+
+### Cloud Storage Credentials (S3/GCS/Azure)
+```sql
+CREATE SECRET my_secret (TYPE S3, PROVIDER credential_chain);
+-- or explicit credentials:
+CREATE SECRET my_secret (TYPE S3, KEY_ID '...', SECRET '...', REGION 'us-east-1');
+```
+Required before querying `s3://`/`gs://`/`azure://` paths unless credentials are already in the
+environment DuckDB's default provider chain checks (`~/.aws/config`, env vars, etc.).
+`credential_chain` reuses the AWS SDK's normal credential resolution rather than hardcoding a key.
 
 ---
 
