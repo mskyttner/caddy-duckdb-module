@@ -226,6 +226,99 @@ func TestGgsqlHandler_ErrorEnvelope_CategoryMapping(t *testing.T) {
 	}
 }
 
+func TestClampRenderDim(t *testing.T) {
+	cases := []struct {
+		v, max, want int
+	}{
+		{0, 500, 0},
+		{-5, 500, 0},
+		{100, 500, 100},
+		{500, 500, 500},
+		{501, 500, 500},
+		{100000, 4000, 4000},
+	}
+	for _, tc := range cases {
+		if got := clampRenderDim(tc.v, tc.max); got != tc.want {
+			t.Errorf("clampRenderDim(%d, %d) = %d, want %d", tc.v, tc.max, got, tc.want)
+		}
+	}
+}
+
+func TestGgsqlHandler_Sizing_ForwardedOnlyWhenSet(t *testing.T) {
+	var gotQuery map[string][]string
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = map[string][]string(r.URL.Query())
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("chart"))
+	}))
+	defer mock.Close()
+
+	handler, cleanup := setupGgsqlHandler(t, mock.URL)
+	defer cleanup()
+
+	// No sizing fields set: none of the four params should appear at all.
+	body := `{"sql":"SELECT * FROM works","visualise":"VISUALISE year AS x, revenue AS y DRAW bar","format":"text"}`
+	req := httptest.NewRequest("POST", "/duckdb/ggsql", strings.NewReader(body))
+	req = addGgsqlAuthContext(req, "admin")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, p := range []string{"width", "height", "png-width", "png-height"} {
+		if _, ok := gotQuery[p]; ok {
+			t.Errorf("expected %q to be absent when unset, got %v", p, gotQuery[p])
+		}
+	}
+
+	// All four set, within bounds: each should be forwarded verbatim.
+	body = `{"sql":"SELECT * FROM works","visualise":"VISUALISE year AS x, revenue AS y DRAW bar","format":"text","width":100,"height":30,"png_width":800,"png_height":500}`
+	req = httptest.NewRequest("POST", "/duckdb/ggsql", strings.NewReader(body))
+	req = addGgsqlAuthContext(req, "admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	want := map[string]string{"width": "100", "height": "30", "png-width": "800", "png-height": "500"}
+	for p, w := range want {
+		got := gotQuery[p]
+		if len(got) != 1 || got[0] != w {
+			t.Errorf("expected %s=%s, got %v", p, w, got)
+		}
+	}
+
+	// Over the clamp bounds: should be capped, not passed through or rejected.
+	body = `{"sql":"SELECT * FROM works","visualise":"VISUALISE year AS x, revenue AS y DRAW bar","format":"text","width":9999,"png_width":999999}`
+	req = httptest.NewRequest("POST", "/duckdb/ggsql", strings.NewReader(body))
+	req = addGgsqlAuthContext(req, "admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := gotQuery["width"]; len(got) != 1 || got[0] != "500" {
+		t.Errorf("expected width clamped to 500, got %v", got)
+	}
+	if got := gotQuery["png-width"]; len(got) != 1 || got[0] != "4000" {
+		t.Errorf("expected png-width clamped to 4000, got %v", got)
+	}
+
+	// Negative value: treated as unset.
+	body = `{"sql":"SELECT * FROM works","visualise":"VISUALISE year AS x, revenue AS y DRAW bar","format":"text","height":-10}`
+	req = httptest.NewRequest("POST", "/duckdb/ggsql", strings.NewReader(body))
+	req = addGgsqlAuthContext(req, "admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := gotQuery["height"]; ok {
+		t.Errorf("expected height to be absent for a negative value, got %v", gotQuery["height"])
+	}
+}
+
 func TestExtensionForContentType(t *testing.T) {
 	cases := []struct {
 		contentType string

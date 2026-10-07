@@ -740,6 +740,11 @@ service block for how to run it. Returns 503 if the sidecar isn't configured or 
 (400/504/500) if it rejects the query. See `ggsql-syntax` (above) for the shared grammar
 reference.
 
+Optional `width`/`height` (characters, max 500) and `png_width`/`png_height` (pixels, max 4000)
+fields control output size for `ansi`/`braille`/`svg`/`text`-family formats and `format=png`
+respectively; omit them to use the sidecar's own per-format defaults. See the `ggsql-syntax`
+doc resource's "Sizing" section for the full table.
+
 ### httpserver-Compatible Endpoint
 
 `POST /duckdb/` — Accepts raw SQL in the request body; compatible with [duck-ui](https://github.com/caioricciuti/duck-ui) and other ClickHouse-compatible clients.

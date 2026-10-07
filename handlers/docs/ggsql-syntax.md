@@ -294,6 +294,32 @@ Caddyfile or `DUCKDB_GGVISUAL_SERVICE_URL`); without it the endpoint returns 503
 formats return raw terminal escape codes as `text/plain` — never JSON-wrapped, since JSON string
 escaping would corrupt them.
 
+### Sizing
+
+Both `/duckdb/ggsql` and the `ggsql_chart` MCP tool accept four optional sizing fields, forwarded
+to the `ggvisual` sidecar's own `width`/`height`/`png-width`/`png-height` render params:
+
+| Field | Unit | Applies to | Default | Max (clamped) |
+|---|---|---|---|---|
+| `width`, `height` | characters | `ansi`, `braille`, `svg`, `braille-svg`, `xterm*`, `braille-xterm*`, `text`, `braille-text`, `cast`, `cast-page` | ggvisual's own per-format default (e.g. `ansi` is 80 cols × 40 rows) | 500 |
+| `png_width`, `png_height` | pixels | the intermediate PNG render; also `format=png`'s own output size | 600 × 400 | 4000 |
+
+Omit a field (or pass 0) to use ggvisual's own default for that format. Values above the max are
+silently clamped, not rejected; negative values are treated as unset. `vegalite`, `html`, and
+other spec-derived formats ignore all four fields — only raster-derived formats are affected.
+`format=png` uses `png_width`/`png_height` for its own output size and ignores `width`/`height`.
+`ansi`'s aspect-preserving scale mode means the rendered output may not exactly fill the
+requested box for a chart whose aspect ratio doesn't match — this is `ggvisual`'s own scaling
+behavior, not something this module adjusts for.
+
+```bash
+curl -X POST http://localhost:8080/duckdb/ggsql \
+  -H "X-API-Key: your-api-key" -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT age, id FROM users",
+       "visualise": "VISUALISE age AS x, id AS y DRAW bar",
+       "format": "braille", "width": 100, "height": 30}'
+```
+
 ## Reference
 
 https://ggsql.org/syntax/index.llms.md — latest syntax docs (upstream, not embedded here).

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,30 @@ import (
 	"github.com/tobilg/caddy-duckdb-module/formats"
 	"go.uber.org/zap"
 )
+
+// Bounds enforced on ggvisual's width/height/png-width/png-height render
+// params, since ggvisual itself does not clamp them (see
+// plans/ggsql-visualize-export.md's "Sizing" section). maxRenderChars applies
+// to character-based formats (ansi, braille, svg, text, xterm*, cast*, ...);
+// maxRenderPixels applies to the intermediate PNG render (png-width/
+// png-height), which also sets the output size for format=png.
+const (
+	maxRenderChars  = 500
+	maxRenderPixels = 4000
+)
+
+// clampRenderDim clamps a requested render dimension to [0, max]. Zero or
+// negative values are treated as "unset" (ggvisual applies its own
+// per-format default), matching ggvisual's own convention that 0 means auto.
+func clampRenderDim(v, max int) int {
+	if v <= 0 {
+		return 0
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
 
 // GgsqlHandler handles POST /duckdb/ggsql: it runs the caller's SQL against this
 // module's own DuckDB engine, sends the result as CSV to the ggvisual sidecar
@@ -53,6 +78,36 @@ type ggsqlRequest struct {
 	SQL       string `json:"sql"`
 	Visualise string `json:"visualise"`
 	Format    string `json:"format"`
+	// Width/Height (characters) apply to ansi, braille, svg, text, xterm*,
+	// cast*, and similar character-grid formats. PNGWidth/PNGHeight (pixels)
+	// size the intermediate PNG render and are also the output size for
+	// format=png. Zero means "let ggvisual pick its own default for this
+	// format." All four are clamped server-side -- see maxRenderChars/
+	// maxRenderPixels.
+	Width     int `json:"width,omitempty"`
+	Height    int `json:"height,omitempty"`
+	PNGWidth  int `json:"png_width,omitempty"`
+	PNGHeight int `json:"png_height,omitempty"`
+}
+
+// ggsqlRenderOptions carries the optional sizing parameters forwarded to
+// ggvisual's /render endpoint, after clamping. Shared by the REST handler
+// and the ggsql_chart MCP tool so both go through the same clamp logic.
+type ggsqlRenderOptions struct {
+	Width     int
+	Height    int
+	PNGWidth  int
+	PNGHeight int
+}
+
+// clamp returns opts with each dimension clamped via clampRenderDim.
+func (opts ggsqlRenderOptions) clamp() ggsqlRenderOptions {
+	return ggsqlRenderOptions{
+		Width:     clampRenderDim(opts.Width, maxRenderChars),
+		Height:    clampRenderDim(opts.Height, maxRenderChars),
+		PNGWidth:  clampRenderDim(opts.PNGWidth, maxRenderPixels),
+		PNGHeight: clampRenderDim(opts.PNGHeight, maxRenderPixels),
+	}
 }
 
 // ggvisualErrorEnvelope is ggvisual's own structured error response shape --
@@ -106,13 +161,15 @@ func (h *GgsqlHandler) capSQL(sqlQuery string) string {
 }
 
 // render runs sqlQuery against this module's own DuckDB engine, sends the
-// result as CSV to the ggvisual sidecar alongside the visualise/format
+// result as CSV to the ggvisual sidecar alongside the visualise/format/sizing
 // parameters, and returns the rendered chart bytes and the Content-Type
 // ggvisual reported. Shared by ServeHTTP (REST) and the ggsql_chart MCP tool.
-func (h *GgsqlHandler) render(ctx context.Context, sqlQuery, visualise, format string) ([]byte, string, error) {
+// opts is clamped internally, so callers may pass raw user input directly.
+func (h *GgsqlHandler) render(ctx context.Context, sqlQuery, visualise, format string, opts ggsqlRenderOptions) ([]byte, string, error) {
 	if format == "" {
 		format = "vegalite"
 	}
+	opts = opts.clamp()
 
 	rows, err := h.dbMgr.QueryMain(sqlQuery)
 	if err != nil {
@@ -132,6 +189,18 @@ func (h *GgsqlHandler) render(ctx context.Context, sqlQuery, visualise, format s
 	q := proxyURL.Query()
 	q.Set("visual", visualise)
 	q.Set("format", format)
+	if opts.Width > 0 {
+		q.Set("width", strconv.Itoa(opts.Width))
+	}
+	if opts.Height > 0 {
+		q.Set("height", strconv.Itoa(opts.Height))
+	}
+	if opts.PNGWidth > 0 {
+		q.Set("png-width", strconv.Itoa(opts.PNGWidth))
+	}
+	if opts.PNGHeight > 0 {
+		q.Set("png-height", strconv.Itoa(opts.PNGHeight))
+	}
 	proxyURL.RawQuery = q.Encode()
 
 	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL.String(), &csvBuf)
@@ -250,8 +319,10 @@ func (h *GgsqlHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	opts := ggsqlRenderOptions{Width: req.Width, Height: req.Height, PNGWidth: req.PNGWidth, PNGHeight: req.PNGHeight}
+
 	startTime := time.Now()
-	body, contentType, err := h.render(r.Context(), h.capSQL(req.SQL), req.Visualise, req.Format)
+	body, contentType, err := h.render(r.Context(), h.capSQL(req.SQL), req.Visualise, req.Format, opts)
 	if err != nil {
 		var rerr *ggsqlRenderError
 		if errors.As(err, &rerr) {

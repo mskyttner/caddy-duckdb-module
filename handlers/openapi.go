@@ -1517,6 +1517,22 @@ func (h *OpenAPIHandler) generateGgsqlOperation() map[string]interface{} {
 								"description": "Output format understood by the ggvisual sidecar (e.g. vegalite, png, svg, ansi, braille). See GET <ggvisual-service-url>/formats for the full list the deployed sidecar supports.",
 								"example":     "vegalite",
 							},
+							"width": map[string]interface{}{
+								"type":        "integer",
+								"description": "Output width in characters, for character-grid formats (ansi, braille, svg, text, xterm*, cast*, ...). Omit for ggvisual's own per-format default. Clamped server-side to 500; ignored by vegalite/html and other spec-derived formats.",
+							},
+							"height": map[string]interface{}{
+								"type":        "integer",
+								"description": "Output height in characters, for character-grid formats. Omit for ggvisual's own per-format default. Clamped server-side to 500; ignored by vegalite/html and other spec-derived formats.",
+							},
+							"png_width": map[string]interface{}{
+								"type":        "integer",
+								"description": "Width in pixels of the intermediate PNG render; also format=png's own output width. Default 600, clamped server-side to 4000.",
+							},
+							"png_height": map[string]interface{}{
+								"type":        "integer",
+								"description": "Height in pixels of the intermediate PNG render; also format=png's own output height. Default 400, clamped server-side to 4000.",
+							},
 						},
 						"required": []string{"sql", "visualise"},
 					},
