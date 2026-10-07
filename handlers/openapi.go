@@ -165,6 +165,9 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 		"/execute": map[string]interface{}{
 			"post": h.generateExecuteOperation(),
 		},
+		"/admin/reload-init": map[string]interface{}{
+			"post": h.generateReloadInitOperation(),
+		},
 		"/ggsql": map[string]interface{}{
 			"post": h.generateGgsqlOperation(),
 		},
@@ -1480,6 +1483,42 @@ func (h *OpenAPIHandler) generateExecuteOperation() map[string]interface{} {
 			"401": map[string]interface{}{"description": "Unauthorized"},
 			"403": map[string]interface{}{"description": "Forbidden (no execute permission or internal table access)"},
 			"500": map[string]interface{}{"description": "Execution error"},
+		},
+	}
+}
+
+// generateReloadInitOperation generates the POST /admin/reload-init operation spec.
+func (h *OpenAPIHandler) generateReloadInitOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":        []string{"Execute"},
+		"summary":     "Reload init_file without restarting",
+		"description": "Re-runs the server's configured `init_file` against the live connection pool, without a restart. Requires the `execute` permission on the caller's role (reuses the same permission as `/execute` rather than a dedicated one). Also triggerable via `SIGHUP`. The init file's own statements must be idempotent to reload cleanly (`CREATE OR REPLACE`, `ATTACH IF NOT EXISTS`, `SET`, `INSTALL`/`LOAD`) — a bare `CREATE`/`ATTACH` will fail on the second reload. Not transactional across statements: a failure partway through leaves the already-applied statements in effect.",
+		"operationId": "reloadInitFile",
+		"security": []map[string]interface{}{
+			{"ApiKeyAuth": []string{}},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Init file reloaded successfully",
+				"content": map[string]interface{}{
+					"application/json": map[string]interface{}{
+						"schema": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"statements_executed": map[string]interface{}{
+									"type":        "integer",
+									"description": "Number of SQL statements executed from the init file",
+								},
+							},
+							"required": []string{"statements_executed"},
+						},
+					},
+				},
+			},
+			"401": map[string]interface{}{"description": "Unauthorized"},
+			"403": map[string]interface{}{"description": "Forbidden (no execute permission)"},
+			"405": map[string]interface{}{"description": "Method not allowed (use POST)"},
+			"500": map[string]interface{}{"description": "Reload failed (no init_file configured, or a statement failed)"},
 		},
 	}
 }
