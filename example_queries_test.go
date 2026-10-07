@@ -1070,6 +1070,55 @@ func TestExampleQueries_Export_HTML(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_Export_ConditionalGET(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("POST", "/duckdb/export",
+		strings.NewReader(`{"sql":"SELECT id, name FROM users LIMIT 3","format":"csv"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(t, d, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	urlPath, ok := mustJSON(t, rec.Body.Bytes())["url"].(string)
+	if !ok || urlPath == "" {
+		t.Fatalf("expected non-empty 'url' in export response")
+	}
+
+	// First GET: should succeed and carry an ETag + Last-Modified.
+	first := serve(t, d, httptest.NewRequest("GET", urlPath, nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", first.Code, first.Body)
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("expected an ETag header on the first download")
+	}
+	if first.Header().Get("Last-Modified") == "" {
+		t.Error("expected a Last-Modified header on the first download")
+	}
+
+	// Second GET with If-None-Match: should 304, with no body.
+	condReq := httptest.NewRequest("GET", urlPath, nil)
+	condReq.Header.Set("If-None-Match", etag)
+	second := serve(t, d, condReq)
+	if second.Code != http.StatusNotModified {
+		t.Errorf("expected 304 for matching If-None-Match, got %d", second.Code)
+	}
+	if second.Body.Len() != 0 {
+		t.Errorf("expected empty body on 304, got %d bytes", second.Body.Len())
+	}
+
+	// A non-matching If-None-Match should still return the full content.
+	staleReq := httptest.NewRequest("GET", urlPath, nil)
+	staleReq.Header.Set("If-None-Match", `"not-the-real-etag"`)
+	third := serve(t, d, staleReq)
+	if third.Code != http.StatusOK {
+		t.Errorf("expected 200 for a non-matching If-None-Match, got %d", third.Code)
+	}
+}
+
 // ─── New features: MCP endpoint ──────────────────────────────────────────────
 
 func mcpCall(t *testing.T, d *DuckDB, id int, method string, params interface{}) map[string]interface{} {
