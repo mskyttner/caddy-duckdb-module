@@ -79,7 +79,7 @@ func NewManager(cfg Config) (*Manager, error) {
 	if useMemoryBootstrap {
 		mgr.mainDB, err = mgr.openWithMemoryBootstrap(cfg)
 	} else {
-		mgr.mainDB, err = openDirectDB(cfg)
+		mgr.mainDB, err = mgr.openDirectDB(cfg)
 	}
 	if err != nil {
 		return nil, err
@@ -103,14 +103,12 @@ func NewManager(cfg Config) (*Manager, error) {
 		zap.Int("max_idle_conns", cfg.Threads),
 	)
 
-	// Execute init file for the standard (non-bootstrap) path.
-	// The bootstrap path runs the init file inside openWithMemoryBootstrap.
-	if cfg.InitFilePath != "" && !useMemoryBootstrap {
-		if _, err := mgr.loadInitFile(cfg.InitFilePath); err != nil {
-			mgr.mainDB.Close()
-			return nil, fmt.Errorf("failed to execute init file: %w", err)
-		}
-	}
+	// For the standard (non-bootstrap) path, the init file has already run at
+	// least once by now -- openDirectDB's connInitFn runs it on every new
+	// physical connection, and the Ping above just forced the first one into
+	// existence. The bootstrap path runs its own init SQL inside
+	// openWithMemoryBootstrap (not yet per-connection -- see that function's
+	// comment).
 
 	// Initialize auth database (always file-based)
 	authDSN := fmt.Sprintf("%s?threads=%d", cfg.AuthDBPath, cfg.Threads)
@@ -648,7 +646,26 @@ func (m *Manager) getTableColumns(table string) ([]string, error) {
 
 // openDirectDB opens the main DuckDB database using the standard sql.Open path.
 // Used when access_mode=read_write, or when no init file is configured.
-func openDirectDB(cfg Config) (*sql.DB, error) {
+//
+// If an init file is configured, it's re-run on every new physical pool
+// connection via connInitFn, not just once at startup. database/sql recycles
+// connections (SetConnMaxLifetime, below) and can open more of them under
+// concurrent load; a one-shot run would miss any session-scoped (not
+// database-level) state the init file sets on connections created later.
+// Database-level state (CREATE MACRO, ATTACH, SET search_path) is unaffected
+// either way -- it's visible from any connection once created -- but nothing
+// here verifies an init file never uses a session-scoped setting, so this
+// costs nothing to get right unconditionally. Still, keep the init file
+// idempotent (CREATE OR REPLACE, ATTACH IF NOT EXISTS; see ReloadInitFile's
+// own doc comment for the same requirement) -- verified directly (2026-10-07)
+// that a genuinely new, concurrently-held connection re-runs it (a unit test
+// holds several connections open at once and counts executions), but also
+// that warmConnections()'s own Ping-then-immediately-Close pattern below
+// mostly collapses back onto a single physical connection via pool reuse in
+// practice, rather than reliably forcing N runs at startup -- so the
+// per-connection cost shows up under genuine concurrent query load, not
+// routinely as an Nx startup tax.
+func (m *Manager) openDirectDB(cfg Config) (*sql.DB, error) {
 	dsn := cfg.MainDBPath
 	if dsn == "" {
 		dsn = ":memory:"
@@ -663,11 +680,28 @@ func openDirectDB(cfg Config) (*sql.DB, error) {
 	if cfg.TempDirectory != "" {
 		dsn = fmt.Sprintf("%s&temp_directory=%s", dsn, cfg.TempDirectory)
 	}
-	db, err := sql.Open("duckdb", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open main database: %w", err)
+
+	initPath := cfg.InitFilePath
+	connInitFn := func(execer driver.ExecerContext) error {
+		if initPath == "" {
+			return nil
+		}
+		n, err := execInitFileStatements(execer, initPath)
+		if err != nil {
+			return fmt.Errorf("failed to execute init file: %w", err)
+		}
+		m.logger.Debug("Executed init SQL file on new connection",
+			zap.String("path", initPath),
+			zap.Int("statements_executed", n),
+		)
+		return nil
 	}
-	return db, nil
+
+	connector, err := duckdb.NewConnector(dsn, connInitFn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create database connector: %w", err)
+	}
+	return sql.OpenDB(connector), nil
 }
 
 // openWithMemoryBootstrap implements the read-only + init SQL strategy:
@@ -681,6 +715,19 @@ func openDirectDB(cfg Config) (*sql.DB, error) {
 //
 // This allows CREATE MACRO, CREATE TABLE ... AS, etc. in init SQL even when
 // the target data file is mounted read-only.
+//
+// Known asymmetry with openDirectDB: the init SQL file itself only runs once
+// here (step 2), not per new pool connection the way openDirectDB's
+// connInitFn now does -- only the ATTACH+USE in step 4 is re-applied per
+// connection. A connection created later (after SetConnMaxLifetime recycles
+// one) gets USE <catalog> but not a fresh run of the init file's own
+// statements. In practice this is low-risk: everything the init file creates
+// (macros, tables) lives in the shared :memory: catalog and is visible from
+// any connection regardless of which one created it -- the gap would only
+// matter for a session-scoped (not database-level) setting, which this
+// mode's init files aren't expected to need given their job is ATTACH/
+// macros/USE. Deliberately deferred rather than fixed alongside openDirectDB
+// -- see plans/integrate-caddy-html-duckdb.md.
 func (m *Manager) openWithMemoryBootstrap(cfg Config) (*sql.DB, error) {
 	// Derive the DuckDB catalog name from the file stem (e.g. "walden-thin-26q1").
 	stem := strings.TrimSuffix(filepath.Base(cfg.MainDBPath), filepath.Ext(cfg.MainDBPath))

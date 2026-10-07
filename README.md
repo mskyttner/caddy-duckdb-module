@@ -504,7 +504,7 @@ All endpoints are under the configured route prefix (default: `/duckdb`). All re
 | `/` | HEAD | key | Endpoint probe (duck-ui) |
 | `/openapi.json` | GET | none | OpenAPI 3.0 spec |
 | `/docs/` | GET | none | Swagger UI |
-| `/health` | GET | none | Health check |
+| `/health` | GET | none | Health check — see [below](#health-check) |
 | `/find` | GET | key | Full-text search (requires FTS sidecar) |
 | `/ggsql` | POST | key | Render a ggsql chart (requires ggvisual sidecar) |
 
@@ -690,6 +690,32 @@ Reload is **not transactional** across statements — if one statement fails par
 already-applied statements from that run stay in effect. This is a cheaper failure at startup
 (the server just doesn't start) than at runtime (the server keeps serving, partially updated), so
 test a reload against a non-production instance before relying on it in an incident.
+
+### Health Check
+
+`GET /duckdb/health` — no authentication required. Checks main database connectivity, auth
+database connectivity, and (when configured) the FTS and `ggvisual` sidecars — not just a static
+`{"status":"ok"}`. Returns HTTP 200 when every check passes, 503 otherwise, so container
+orchestrators and load balancers get a real signal.
+
+```json
+{
+  "status": "healthy",
+  "checks": {
+    "main_database": {"status": "ok", "latency_ms": 1},
+    "auth_database": {"status": "ok", "latency_ms": 1},
+    "fts_sidecar": {"status": "ok", "latency_ms": 4},
+    "ggvisual_sidecar": {"status": "error", "latency_ms": 5002, "error": "context deadline exceeded"}
+  },
+  "pool": {"open_connections": 8, "in_use": 1, "idle": 7}
+}
+```
+
+`fts_sidecar`/`ggvisual_sidecar` only appear when `fts_service_url`/`ggvisual_service_url` is
+configured. Existing `curl -fsS .../health || exit 1`-style Docker/Compose healthchecks (this
+project's own included) only check for HTTP success, so this is backward compatible with every
+example in this repo — and now correctly reports unhealthy if the database is actually
+unreachable, which the previous static response could never detect.
 
 ### Export Endpoint (Token-Efficient Bulk Access)
 

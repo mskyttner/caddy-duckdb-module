@@ -212,13 +212,66 @@ func TestServeHTTP_HealthCheck(t *testing.T) {
 
 	var result map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &result)
-	if result["status"] != "ok" {
-		t.Errorf("Expected status 'ok', got '%v'", result["status"])
+	if result["status"] != "healthy" {
+		t.Errorf("Expected status 'healthy', got '%v'", result["status"])
+	}
+	checks, ok := result["checks"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected a checks object in the response, got: %v", result)
+	}
+	for _, name := range []string{"main_database", "auth_database"} {
+		check, ok := checks[name].(map[string]interface{})
+		if !ok {
+			t.Errorf("Expected a %q check in the response, got: %v", name, checks)
+			continue
+		}
+		if check["status"] != "ok" {
+			t.Errorf("Expected %q check status 'ok', got '%v'", name, check["status"])
+		}
+	}
+	if _, ok := result["pool"]; !ok {
+		t.Error("Expected a pool object in the response")
 	}
 
 	// Health check should NOT call next handler
 	if next.called {
 		t.Error("Health check should not call next handler")
+	}
+}
+
+func TestServeHTTP_HealthCheck_UnhealthySidecar(t *testing.T) {
+	d, cleanup := setupTestModule(t)
+	defer cleanup()
+
+	// Point at an address nothing is listening on.
+	d.ggsqlHandler = handlers.NewGgsqlHandler(d.dbMgr, d.authorizer, "http://127.0.0.1:1", 0, zap.NewNop())
+
+	req := httptest.NewRequest("GET", "/duckdb/health", nil)
+	rec := httptest.NewRecorder()
+	if err := d.ServeHTTP(rec, req, &mockNextHandler{}); err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when a configured sidecar is unreachable, got %d: %s", rec.Code, rec.Body)
+	}
+
+	var result map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &result)
+	if result["status"] != "unhealthy" {
+		t.Errorf("expected status 'unhealthy', got '%v'", result["status"])
+	}
+	checks := result["checks"].(map[string]interface{})
+	ggvisualCheck, ok := checks["ggvisual_sidecar"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected a ggvisual_sidecar check, got: %v", checks)
+	}
+	if ggvisualCheck["status"] != "error" {
+		t.Errorf("expected ggvisual_sidecar check status 'error', got '%v'", ggvisualCheck["status"])
+	}
+	// The otherwise-healthy main/auth database checks should still report ok.
+	if checks["main_database"].(map[string]interface{})["status"] != "ok" {
+		t.Error("expected main_database check to still report ok")
 	}
 }
 

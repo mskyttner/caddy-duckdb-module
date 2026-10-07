@@ -1,6 +1,8 @@
 package database
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -248,6 +250,76 @@ func TestManager_ReloadInitFile_MissingFile(t *testing.T) {
 	mgr := setupManagerWithInitFile(t, "/nonexistent/path/init.sql")
 	if _, err := mgr.ReloadInitFile(); err == nil {
 		t.Error("expected error for a missing init file, got nil")
+	}
+}
+
+func TestManager_OpenDirectDB_RunsInitFilePerConnection(t *testing.T) {
+	// A session/connection counter: the init file increments it on every
+	// physical connection it runs on. If openDirectDB's connInitFn only ran
+	// once (the old behavior), this would stay at 1 regardless of how many
+	// physical connections get opened.
+	path := writeInitFile(t, `
+CREATE SEQUENCE IF NOT EXISTS conn_counter_seq;
+CREATE TABLE IF NOT EXISTS conn_log (n INTEGER);
+INSERT INTO conn_log VALUES (nextval('conn_counter_seq'));
+`)
+
+	mgr := &Manager{logger: zap.NewNop()}
+	db, err := mgr.openDirectDB(Config{
+		MainDBPath:   ":memory:",
+		Threads:      1,
+		AccessMode:   "read_write",
+		InitFilePath: path,
+	})
+	if err != nil {
+		t.Fatalf("openDirectDB: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(5)
+
+	// Hold 3 connections open simultaneously so the pool can't satisfy them
+	// from an idle connection that already ran the init file -- each must be
+	// a genuinely new physical connection.
+	var conns []*sql.Conn
+	for i := 0; i < 3; i++ {
+		c, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatalf("Conn %d: %v", i, err)
+		}
+		conns = append(conns, c)
+	}
+	defer func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+
+	// Query via one of the 3 already-held connections, not db.QueryRow --
+	// that would check out a 4th new connection from the pool (also running
+	// the init file, confirming the fix works, but throwing off the count).
+	var count int
+	if err := conns[0].QueryRowContext(context.Background(), "SELECT COUNT(*) FROM conn_log").Scan(&count); err != nil {
+		t.Fatalf("query conn_log: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected the init file to run once per physical connection (3), got %d row(s) in conn_log", count)
+	}
+}
+
+func TestManager_OpenDirectDB_NoInitFile(t *testing.T) {
+	mgr := &Manager{logger: zap.NewNop()}
+	db, err := mgr.openDirectDB(Config{
+		MainDBPath: ":memory:",
+		Threads:    1,
+		AccessMode: "read_write",
+	})
+	if err != nil {
+		t.Fatalf("openDirectDB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		t.Fatalf("Ping with no init file configured should succeed, got: %v", err)
 	}
 }
 
