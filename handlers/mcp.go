@@ -268,11 +268,18 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				"(duckdb://docs/ggsql-syntax) for the full grammar. The response also echoes back sql and " +
 				"visualise as plain fields: that's the compact, lossless description of what the chart shows -- " +
 				"prefer reasoning from those over fetching the rendered chart. Requires query permission and the " +
-				"ggvisual sidecar to be configured on this server (returns an error otherwise).",
+				"ggvisual sidecar to be configured on this server (returns an error otherwise). width/height " +
+				"(characters, max 500) size ansi/braille/svg/text/xterm*/cast*-family formats; png_width/png_height " +
+				"(pixels, max 4000) size the intermediate PNG render and also format=png's own output. Omit for " +
+				"ggvisual's own per-format default; vegalite/html and other spec-derived formats ignore all four.",
 			InputSchema: buildSchema(
 				strProp("sql", "Read-only SQL query whose result is the chart's data", true),
 				strProp("visualise", "ggsql VISUALISE clause describing the chart (no FROM)", true),
 				strProp("format", "ggvisual output format (default: vegalite; also: png, svg, ansi, braille, html, and more)", false),
+				numProp("width", "Output width in characters, for character-grid formats (max 500; default: ggvisual's own per-format value)"),
+				numProp("height", "Output height in characters, for character-grid formats (max 500; default: ggvisual's own per-format value)"),
+				numProp("png_width", "Intermediate PNG render width in pixels; also format=png's output width (max 4000, default 600)"),
+				numProp("png_height", "Intermediate PNG render height in pixels; also format=png's output height (max 4000, default 400)"),
 				numProp("ttl_minutes", "File lifetime in minutes (0 = server default)"),
 				boolProp("public", "If true, return an auth-free URL (UUID capability token). Requires public exports to be configured on this server."),
 			),
@@ -307,8 +314,14 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 			}
 			format := argString(req, "format", "vegalite")
 			ttlMinutes := argInt(req, "ttl_minutes", 0)
+			opts := ggsqlRenderOptions{
+				Width:     argInt(req, "width", 0),
+				Height:    argInt(req, "height", 0),
+				PNGWidth:  argInt(req, "png_width", 0),
+				PNGHeight: argInt(req, "png_height", 0),
+			}
 
-			body, contentType, err := ggsqlHandler.render(ctx, ggsqlHandler.capSQL(sql), visualise, format)
+			body, contentType, err := ggsqlHandler.render(ctx, ggsqlHandler.capSQL(sql), visualise, format, opts)
 			if err != nil {
 				return textResult("Error: " + err.Error()), nil
 			}

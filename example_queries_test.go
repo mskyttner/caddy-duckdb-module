@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -1142,6 +1143,48 @@ func TestExampleQueries_MCP_GgsqlChart(t *testing.T) {
 	}
 	if chartResp["visualise"] != "VISUALISE age AS x, id AS y DRAW bar" {
 		t.Errorf("expected visualise echoed back, got: %v", chartResp["visualise"])
+	}
+}
+
+func TestExampleQueries_MCP_GgsqlChart_Sizing(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	var gotQuery url.Values
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("chart"))
+	}))
+	defer mock.Close()
+
+	d.ggsqlHandler = handlers.NewGgsqlHandler(d.dbMgr, d.authorizer, mock.URL, d.AbsoluteMaxRows, d.logger)
+	d.mcpHandler = handlers.NewMCPHandler(d.dbMgr, d.authorizer, d.exportHandler, nil, d.ggsqlHandler, d.logger, 200, "", "")
+
+	resp := mcpCall(t, d, 25, "tools/call", map[string]interface{}{
+		"name": "ggsql_chart",
+		"arguments": map[string]interface{}{
+			"sql":        "SELECT age, id FROM users",
+			"visualise":  "VISUALISE age AS x, id AS y DRAW bar",
+			"format":     "text",
+			"width":      100,
+			"height":     30,
+			"png_width":  800,
+			"png_height": 500,
+		},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if strings.HasPrefix(text, "Error:") {
+		t.Fatalf("MCP ggsql_chart returned error: %s", text)
+	}
+	want := map[string]string{"width": "100", "height": "30", "png-width": "800", "png-height": "500"}
+	for p, w := range want {
+		if got := gotQuery.Get(p); got != w {
+			t.Errorf("expected %s=%s forwarded to ggvisual, got %q", p, w, got)
+		}
 	}
 }
 
