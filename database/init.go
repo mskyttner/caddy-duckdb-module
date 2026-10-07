@@ -2,12 +2,39 @@ package database
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"os"
 	"strings"
 
 	"go.uber.org/zap"
 )
+
+// execInitFileStatements reads path, parses it into statements, and executes
+// each one via execer, returning the number of statements executed. Used by
+// connInitFn callbacks (openDirectDB) to re-run the init file on every new
+// physical connection -- a driver.ExecerContext, not a *sql.DB, since that's
+// what duckdb.NewConnector's connInitFn is handed. loadInitFile (below) is
+// the *sql.DB-based sibling used for the initial load and for on-demand
+// reload (ReloadInitFile) against the already-open connection pool.
+func execInitFileStatements(execer driver.ExecerContext, path string) (int, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read init file '%s': %w", path, err)
+	}
+	statements, err := parseSQL(string(content))
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse init file '%s': %w", path, err)
+	}
+	ctx := context.Background()
+	for i, stmt := range statements {
+		if _, err := execer.ExecContext(ctx, stmt, nil); err != nil {
+			return 0, fmt.Errorf("failed to execute init statement %d (%s): %w",
+				i+1, truncateStatement(stmt, 50), err)
+		}
+	}
+	return len(statements), nil
+}
 
 // ReloadInitFile re-runs the configured init file against the live
 // connection pool, without restarting the module. Returns the number of

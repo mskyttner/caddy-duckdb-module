@@ -1,6 +1,8 @@
 package duckdb
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -468,9 +470,7 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 
 	// Health check endpoint (no authentication required)
 	if r.URL.Path == d.routePrefix+"/health" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		d.serveHealth(w, r)
 		return nil
 	}
 
@@ -636,6 +636,114 @@ func (d *DuckDB) Cleanup() error {
 		return d.dbMgr.Close()
 	}
 	return nil
+}
+
+// healthCheckResult is one component's result in the /health response.
+type healthCheckResult struct {
+	Status    string `json:"status"`
+	LatencyMs int64  `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// healthPoolStats mirrors database/sql.DBStats' most operationally useful fields.
+type healthPoolStats struct {
+	OpenConnections int `json:"open_connections"`
+	InUse           int `json:"in_use"`
+	Idle            int `json:"idle"`
+}
+
+// healthResponse is the POST /health response body.
+type healthResponse struct {
+	Status string                        `json:"status"`
+	Checks map[string]*healthCheckResult `json:"checks"`
+	Pool   *healthPoolStats              `json:"pool,omitempty"`
+}
+
+// timedCheck runs check and reports it as "ok" or "error" with latency,
+// shared by every component below.
+func timedCheck(check func() error) *healthCheckResult {
+	start := time.Now()
+	err := check()
+	result := &healthCheckResult{LatencyMs: time.Since(start).Milliseconds()}
+	if err != nil {
+		result.Status = "error"
+		result.Error = err.Error()
+		return result
+	}
+	result.Status = "ok"
+	return result
+}
+
+// serveHealth reports this server's own health plus every optional subsystem
+// that's actually configured (main/auth database connectivity, the FTS and
+// ggvisual sidecars if their service URLs are set) -- replacing the previous
+// static {"status":"ok"} response, which never actually checked anything.
+// No authentication required, matching the previous behavior.
+func (d *DuckDB) serveHealth(w http.ResponseWriter, r *http.Request) {
+	response := healthResponse{Status: "healthy", Checks: make(map[string]*healthCheckResult)}
+	allHealthy := true
+
+	record := func(name string, result *healthCheckResult) {
+		response.Checks[name] = result
+		if result.Status != "ok" {
+			allHealthy = false
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	record("main_database", timedCheck(func() error {
+		return d.dbMgr.MainDB().PingContext(ctx)
+	}))
+	record("auth_database", timedCheck(func() error {
+		return d.dbMgr.AuthDB().PingContext(ctx)
+	}))
+	if d.ftsHandler != nil {
+		record("fts_sidecar", timedCheck(func() error {
+			ok, err := d.ftsHandler.CheckHealth()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("sidecar reported unhealthy")
+			}
+			return nil
+		}))
+	}
+	if d.ggsqlHandler != nil {
+		record("ggvisual_sidecar", timedCheck(func() error {
+			ok, err := d.ggsqlHandler.CheckHealth()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("sidecar reported unhealthy")
+			}
+			return nil
+		}))
+	}
+
+	if !allHealthy {
+		response.Status = "unhealthy"
+	}
+
+	stats := d.dbMgr.MainDB().Stats()
+	response.Pool = &healthPoolStats{
+		OpenConnections: stats.OpenConnections,
+		InUse:           stats.InUse,
+		Idle:            stats.Idle,
+	}
+
+	statusCode := http.StatusOK
+	if !allHealthy {
+		statusCode = http.StatusServiceUnavailable
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(response)
 }
 
 // UnmarshalCaddyfile implements caddyfile.Unmarshaler.
