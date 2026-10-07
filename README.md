@@ -223,7 +223,7 @@ If you get CGO-related errors, ensure:
 | `memory_limit` | string | *80% of RAM* | Max memory DuckDB can use (e.g., `"4GB"`, `"512MB"`). Optional. |
 | `enable_object_cache` | bool | `false` | Enable DuckDB's object cache for faster repeated queries. Optional. |
 | `temp_directory` | string | *system default* | Directory for temporary files when spilling to disk. Optional. |
-| `init_file` | string | *unset* | SQL file to execute once on startup. Optional. |
+| `init_file` | string | *unset* | SQL file to execute on startup, and reloadable later without a restart — see [Reloading init_file](#reloading-init_file-without-a-restart). Optional. |
 | `fts_service_url` | string | *unset* | Full-text search sidecar URL (e.g. `http://fts:8701`). Optional. |
 | `ggvisual_service_url` | string | *unset* | ggvisual sidecar URL for ggsql chart rendering (e.g. `http://ggvisual:8080`). Required to enable `/ggsql`. Optional. |
 | `cors_origins` | string | *unset* | Space-separated allowed CORS origins, or `*`. Optional. |
@@ -495,6 +495,7 @@ All endpoints are under the configured route prefix (default: `/duckdb`). All re
 | `/query` | POST | key | Run read-only SQL (parameterized) |
 | `/query/{sql}/result.{fmt}` | GET | key | Read-only SQL via URL |
 | `/execute` | POST | key + `can_execute` | Run write SQL (INSERT/UPDATE/DELETE/DDL) |
+| `/admin/reload-init` | POST | key + `can_execute` | Reload `init_file` without restarting (also triggerable via `SIGHUP`) |
 | `/export` | POST | key | Run SQL → server file → return URL |
 | `/exports/{filename}` | GET | none (UUID token) | Download an exported file |
 | `/public-exports/{filename}` | GET | none (UUID token) | Download a public exported file (no auth needed) |
@@ -647,6 +648,48 @@ curl -X POST http://localhost:8080/duckdb/execute \
 ```
 
 If the database was created before this feature, run `./tools/auth-db migrate -d data/auth.db` to add the `can_execute` column.
+
+### Reloading init_file Without a Restart
+
+`POST /duckdb/admin/reload-init` — re-runs the configured `init_file` against the live
+connection pool, without restarting the server. Requires `can_execute` permission (same
+permission as `/duckdb/execute` — reusing it avoids a dedicated permission column for a single
+operational action).
+
+```bash
+curl -X POST http://localhost:8080/duckdb/admin/reload-init \
+  -H "X-API-Key: your-admin-key"
+# {"statements_executed": 47}
+```
+
+Also triggerable via `SIGHUP` (the ops-idiomatic reload signal), for automation that sends
+signals rather than HTTP requests:
+
+```bash
+kill -HUP <caddy-pid>
+# or, in a container:
+docker kill --signal=HUP <container>
+```
+
+**Your `init_file` must be idempotent to reload cleanly** — every statement needs to be safe to
+run a second (or third, or Nth) time:
+
+- Use `CREATE OR REPLACE MACRO`/`TABLE`, not a bare `CREATE MACRO`/`TABLE`.
+- Use `ATTACH IF NOT EXISTS`, not a bare `ATTACH`.
+- `SET`, `INSTALL`, and `LOAD` are already safe to re-run as-is.
+- **Watch out for `SET search_path`**: it's database-level, not session-scoped, so a trailing
+  `SET search_path = '...'` from one run is still in effect when the file runs again. If a later
+  statement creates an object unqualified, it resolves against whatever `search_path` is at that
+  moment — which, after one reload, may no longer be the default catalog. Reset `search_path` to
+  a known-safe value as the *first* statement in the file if it sets one elsewhere, or qualify
+  object creation explicitly (`CREATE OR REPLACE MACRO memory.foo(...)`). See
+  `examples/init.sql` for a worked example of both the `ATTACH IF NOT EXISTS` and the
+  `search_path` reset.
+
+Reload is **not transactional** across statements — if one statement fails partway through, the
+already-applied statements from that run stay in effect. This is a cheaper failure at startup
+(the server just doesn't start) than at runtime (the server keeps serving, partially updated), so
+test a reload against a non-production instance before relying on it in an incident.
 
 ### Export Endpoint (Token-Efficient Bulk Access)
 

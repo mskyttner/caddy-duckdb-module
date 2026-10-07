@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +114,7 @@ func setupExampleModule(t *testing.T) (*DuckDB, func()) {
 	d.columnsHandler = handlers.NewColumnsHandler(mgr, authorizer, d.logger)
 	d.httpserverHandler = handlers.NewHTTPServerHandler(mgr, authorizer, d.logger)
 	d.executeHandler = handlers.NewExecuteHandler(mgr, authorizer, d.logger)
+	d.adminHandler = handlers.NewAdminHandler(mgr, authorizer, d.logger)
 	d.exportHandler = handlers.NewExportHandler(mgr, authorizer, d.logger, exportsDir, "/duckdb/exports", "", "", time.Hour)
 	d.mcpHandler = handlers.NewMCPHandler(mgr, authorizer, d.exportHandler, nil, nil, d.logger, 200, "", "")
 
@@ -800,6 +802,135 @@ func TestExampleQueries_Execute_ForbiddenForReader(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("reader should not execute writes, expected 403, got %d", rec.Code)
+	}
+}
+
+// ─── New features: admin reload-init endpoint ────────────────────────────────
+
+func TestExampleQueries_AdminReloadInit_ForbiddenForReader(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("POST", "/duckdb/admin/reload-init", nil)
+	req.Header.Set("X-API-Key", "reader-key")
+	rec := httptest.NewRecorder()
+	d.ServeHTTP(rec, req, &mockNextHandler{})
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("reader should not be able to reload, expected 403, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestExampleQueries_AdminReloadInit_MethodNotAllowed(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/duckdb/admin/reload-init", nil)
+	rec := serve(t, d, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestExampleQueries_AdminReloadInit_NoInitFileConfigured(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	// setupExampleModule's Manager has no InitFilePath configured.
+	req := httptest.NewRequest("POST", "/duckdb/admin/reload-init", nil)
+	rec := serve(t, d, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 when no init_file is configured, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestExampleQueries_AdminReloadInit_Success(t *testing.T) {
+	// Needs its own Manager (not setupExampleModule's) with a real, editable
+	// init file, to exercise the actual "ops edits init.sql, reloads over
+	// HTTP, no restart" workflow end to end.
+	initPath := filepath.Join(t.TempDir(), "init.sql")
+	if err := os.WriteFile(initPath, []byte(`CREATE OR REPLACE MACRO greeting() AS 'hello';`), 0644); err != nil {
+		t.Fatalf("failed to write init file: %v", err)
+	}
+
+	cfg := database.Config{
+		MainDBPath:   ":memory:",
+		AuthDBPath:   ":memory:",
+		Threads:      1,
+		AccessMode:   "read_write",
+		QueryTimeout: 30 * time.Second,
+		InitFilePath: initPath,
+		Logger:       zap.NewNop(),
+	}
+	mgr, err := database.NewManagerForTesting(cfg)
+	if err != nil {
+		t.Fatalf("NewManagerForTesting: %v", err)
+	}
+	defer mgr.Close()
+
+	authorizer := auth.NewAuthorizer(mgr.AuthDB())
+	if err := authorizer.CreateAPIKey("admin-key", "admin", nil); err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	_, err = mgr.AuthDB().Exec(`ALTER TABLE permissions ADD COLUMN IF NOT EXISTS can_execute BOOLEAN DEFAULT false`)
+	if err != nil {
+		t.Fatalf("add can_execute column: %v", err)
+	}
+	if _, err := mgr.AuthDB().Exec(`UPDATE permissions SET can_execute = true WHERE role_name = 'admin'`); err != nil {
+		t.Fatalf("grant execute to admin: %v", err)
+	}
+
+	d := &DuckDB{
+		logger:      zap.NewNop(),
+		dbMgr:       mgr,
+		authorizer:  authorizer,
+		authMw:      auth.NewMiddleware(authorizer),
+		routePrefix: "/duckdb",
+	}
+	d.adminHandler = handlers.NewAdminHandler(mgr, authorizer, d.logger)
+
+	reload := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/duckdb/admin/reload-init", nil)
+		req.Header.Set("X-API-Key", "admin-key")
+		rec := httptest.NewRecorder()
+		if err := d.ServeHTTP(rec, req, &mockNextHandler{}); err != nil {
+			t.Fatalf("ServeHTTP: %v", err)
+		}
+		return rec
+	}
+
+	rec := reload()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first reload: expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	m := mustJSON(t, rec.Body.Bytes())
+	if m["statements_executed"].(float64) != 1 {
+		t.Errorf("expected statements_executed:1, got %v", m["statements_executed"])
+	}
+
+	var greeting string
+	if err := mgr.QueryRowMain("SELECT greeting()").Scan(&greeting); err != nil {
+		t.Fatalf("macro not callable after reload: %v", err)
+	}
+	if greeting != "hello" {
+		t.Errorf("expected 'hello', got %q", greeting)
+	}
+
+	// Simulate an ops edit to init.sql, then reload again over HTTP.
+	if err := os.WriteFile(initPath, []byte(`CREATE OR REPLACE MACRO greeting() AS 'goodbye';`), 0644); err != nil {
+		t.Fatalf("failed to rewrite init file: %v", err)
+	}
+	rec = reload()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second reload: expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	if err := mgr.QueryRowMain("SELECT greeting()").Scan(&greeting); err != nil {
+		t.Fatalf("macro not callable after second reload: %v", err)
+	}
+	if greeting != "goodbye" {
+		t.Errorf("expected 'goodbye' after reload, got %q", greeting)
 	}
 }
 

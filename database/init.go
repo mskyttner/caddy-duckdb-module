@@ -9,25 +9,44 @@ import (
 	"go.uber.org/zap"
 )
 
-// loadInitFile reads and executes SQL statements from an init file.
-// This is called during database initialization to set up extensions,
-// configuration, and other startup SQL commands.
-func (m *Manager) loadInitFile(path string) error {
+// ReloadInitFile re-runs the configured init file against the live
+// connection pool, without restarting the module. Returns the number of
+// statements executed. Returns an error if no init_file was configured at
+// startup.
+//
+// This re-executes every statement in the file, so the init file's own
+// statements must be idempotent to reload cleanly -- CREATE OR REPLACE
+// MACRO/TABLE, ATTACH IF NOT EXISTS, SET, and INSTALL/LOAD are all safe to
+// re-run; a bare CREATE MACRO/TABLE or ATTACH is not and will fail with an
+// "already exists" error on reload. Not transactional across statements: a
+// failure partway through leaves the already-applied statements in effect.
+func (m *Manager) ReloadInitFile() (int, error) {
+	if m.initFilePath == "" {
+		return 0, fmt.Errorf("no init_file configured for this server")
+	}
+	return m.loadInitFile(m.initFilePath)
+}
+
+// loadInitFile reads and executes SQL statements from an init file, returning
+// the number of statements executed. This is called during database
+// initialization to set up extensions, configuration, and other startup SQL
+// commands -- and again, later, by ReloadInitFile for a live reload.
+func (m *Manager) loadInitFile(path string) (int, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("failed to read init file '%s': %w", path, err)
+		return 0, fmt.Errorf("failed to read init file '%s': %w", path, err)
 	}
 
 	statements, err := parseSQL(string(content))
 	if err != nil {
-		return fmt.Errorf("failed to parse init file '%s': %w", path, err)
+		return 0, fmt.Errorf("failed to parse init file '%s': %w", path, err)
 	}
 
 	if len(statements) == 0 {
 		m.logger.Info("Init file is empty, skipping",
 			zap.String("path", path),
 		)
-		return nil
+		return 0, nil
 	}
 
 	m.logger.Info("Executing init SQL file",
@@ -46,7 +65,7 @@ func (m *Manager) loadInitFile(path string) error {
 
 		_, err := m.mainDB.ExecContext(ctx, stmt)
 		if err != nil {
-			return fmt.Errorf("failed to execute init statement %d (%s): %w",
+			return 0, fmt.Errorf("failed to execute init statement %d (%s): %w",
 				i+1, truncateStatement(stmt, 50), err)
 		}
 	}
@@ -56,7 +75,7 @@ func (m *Manager) loadInitFile(path string) error {
 		zap.Int("statements_executed", len(statements)),
 	)
 
-	return nil
+	return len(statements), nil
 }
 
 // parseSQL parses SQL content into individual statements.
