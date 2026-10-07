@@ -911,8 +911,16 @@ func TestExampleQueries_AdminReloadInit_Success(t *testing.T) {
 		t.Errorf("expected statements_executed:1, got %v", m["statements_executed"])
 	}
 
+	// QueryRowScanMain, not QueryRowMain(...).Scan(...) -- the latter is a
+	// known race (see its own doc comment in database/manager.go): the
+	// context its *sql.Row holds is cancelled by a deferred cancel() the
+	// instant QueryRowMain returns, before the lazily-executed query is ever
+	// actually run by a later .Scan() call, so it intermittently fails with
+	// "context canceled" under load. Reproduced directly: this test failed
+	// this way in CI (go test -race, full suite) while passing reliably in
+	// isolation, before switching to the safe helper.
 	var greeting string
-	if err := mgr.QueryRowMain("SELECT greeting()").Scan(&greeting); err != nil {
+	if err := mgr.QueryRowScanMain("SELECT greeting()", []interface{}{&greeting}); err != nil {
 		t.Fatalf("macro not callable after reload: %v", err)
 	}
 	if greeting != "hello" {
@@ -927,7 +935,7 @@ func TestExampleQueries_AdminReloadInit_Success(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("second reload: expected 200, got %d: %s", rec.Code, rec.Body)
 	}
-	if err := mgr.QueryRowMain("SELECT greeting()").Scan(&greeting); err != nil {
+	if err := mgr.QueryRowScanMain("SELECT greeting()", []interface{}{&greeting}); err != nil {
 		t.Fatalf("macro not callable after second reload: %v", err)
 	}
 	if greeting != "goodbye" {
