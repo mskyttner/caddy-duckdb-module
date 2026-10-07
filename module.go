@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -157,6 +159,7 @@ type DuckDB struct {
 	exportHandler     *handlers.ExportHandler
 	importHandler     *handlers.ImportHandler
 	mcpHandler        *handlers.MCPHandler
+	adminHandler      *handlers.AdminHandler
 	routePrefix       string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
 }
 
@@ -259,6 +262,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	d.columnsHandler = handlers.NewColumnsHandler(d.dbMgr, d.authorizer, d.logger)
 	d.httpserverHandler = handlers.NewHTTPServerHandler(d.dbMgr, d.authorizer, d.logger)
 	d.executeHandler = handlers.NewExecuteHandler(d.dbMgr, d.authorizer, d.logger)
+	d.adminHandler = handlers.NewAdminHandler(d.dbMgr, d.authorizer, d.logger)
 
 	// Initialize export handler (env var fallbacks for optional settings)
 	if d.ExportsDir == "" {
@@ -331,6 +335,33 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	if d.ImportsDir != "" {
 		d.importHandler.StartCleanup(ctx, 5*time.Minute)
 		d.logger.Info("Import handler initialized", zap.String("imports_dir", d.ImportsDir))
+	}
+
+	// Reload init_file on SIGHUP, without restarting -- see plans/reload-without-restart.md.
+	// Caddy's own process-wide signal handler also listens for SIGHUP (as a documented
+	// no-op), and Go delivers a signal to every registered channel, so this doesn't
+	// conflict with it. Also reachable via POST /duckdb/admin/reload-init for automation
+	// that can't send signals.
+	if d.InitFilePath != "" {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGHUP)
+		go func() {
+			defer signal.Stop(sigChan)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-sigChan:
+					statements, err := d.dbMgr.ReloadInitFile()
+					if err != nil {
+						d.logger.Error("Failed to reload init file on SIGHUP", zap.Error(err))
+						continue
+					}
+					d.logger.Info("Reloaded init file on SIGHUP", zap.Int("statements_executed", statements))
+				}
+			}
+		}()
+		d.logger.Info("SIGHUP reload handler registered", zap.String("init_file", d.InitFilePath))
 	}
 
 	// Initialize FTS handler if service URL is configured
@@ -573,6 +604,10 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	} else if r.URL.Path == d.routePrefix+"/execute" {
 		// Raw SQL write endpoint (requires execute permission)
 		d.executeHandler.ServeHTTP(w, r)
+		return nil
+	} else if r.URL.Path == d.routePrefix+"/admin/reload-init" {
+		// Reload init_file without restarting (requires execute permission)
+		d.adminHandler.ServeReloadInit(w, r)
 		return nil
 	} else if r.URL.Path == d.routePrefix+"/export" {
 		// Export query results to file (returns URL, not row data)

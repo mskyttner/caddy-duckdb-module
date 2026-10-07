@@ -22,7 +22,14 @@
 # MCP docs: any *.md file in examples/docs/ is served as an MCP resource at
 #   duckdb://docs/<stem>  (e.g. suhf-bibliometrics.md → duckdb://docs/suhf-bibliometrics)
 # Add or edit files in examples/docs/ to provide deployment-specific guidance
-# to LLMs without restarting the container (changes take effect on next startup).
+# to LLMs (changes take effect on next startup).
+#
+# init.sql reload without restarting: edit ./init.sql, then either
+#   podman kill --signal=HUP diva-mcp
+# or
+#   curl -X POST http://localhost:8099/duckdb/admin/reload-init -H "X-API-Key: <admin-key>"
+# Every statement in init.sql must be safe to re-run (CREATE OR REPLACE,
+# ATTACH IF NOT EXISTS, SET, INSTALL/LOAD) -- this file already is.
 
 services:
   diva-mcp:

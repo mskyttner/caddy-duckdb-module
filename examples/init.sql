@@ -1,11 +1,26 @@
+-- Reset search_path before anything else, in case this file is being
+-- re-run (POST /duckdb/admin/reload-init or SIGHUP, see
+-- plans/reload-without-restart.md). search_path is database-level, not
+-- session-scoped, so the trailing `SET search_path='diva,main'` below
+-- persists from one run to the next -- without this reset, the next reload's
+-- unqualified `CREATE OR REPLACE MACRO`/`TABLE` statements below would
+-- resolve against the read-only `diva` catalog instead of `memory`,
+-- failing with "Cannot execute statement of type CREATE on database diva
+-- which is attached in read-only mode!" (reproduced while testing reload
+-- against this exact file).
+SET search_path='memory,main';
+
 -- Attach the DiVA OAI normalized database in read-only mode.
 -- The file is bind-mounted into the container at /data/diva/.
-ATTACH '/data/diva/diva_oai_normalized.db' AS diva (READ_ONLY);
+-- IF NOT EXISTS: this file is re-run on every POST /duckdb/admin/reload-init
+-- (or SIGHUP) to reload without restarting -- a bare ATTACH would fail with
+-- "already exists" on the second run. See plans/reload-without-restart.md.
+ATTACH IF NOT EXISTS '/data/diva/diva_oai_normalized.db' AS diva (READ_ONLY);
 
 -- Attach the Kurathor curation database in read-write mode.
 -- Persists across container restarts. DuckDB creates the file on first start.
 -- Bind-mounted at /data/kurathor/ (directory mount so DuckDB can create WAL files).
-ATTACH '/data/kurathor/kurathor.db' AS kurathor;
+ATTACH IF NOT EXISTS '/data/kurathor/kurathor.db' AS kurathor;
 
 -- Bootstrap curation schema in kurathor (idempotent).
 CREATE TABLE IF NOT EXISTS kurathor.curation_notes (

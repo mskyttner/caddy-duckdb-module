@@ -1,7 +1,12 @@
 package database
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 func TestParseSQL(t *testing.T) {
@@ -149,6 +154,100 @@ LOAD httpfs;
 				}
 			}
 		})
+	}
+}
+
+func setupManagerWithInitFile(t *testing.T, initFilePath string) *Manager {
+	t.Helper()
+	cfg := Config{
+		MainDBPath:   ":memory:",
+		AuthDBPath:   ":memory:",
+		Threads:      1,
+		AccessMode:   "read_write",
+		QueryTimeout: 10 * time.Second,
+		InitFilePath: initFilePath,
+		Logger:       zap.NewNop(),
+	}
+	mgr, err := NewManagerForTesting(cfg)
+	if err != nil {
+		t.Fatalf("NewManagerForTesting: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close() })
+	return mgr
+}
+
+func writeInitFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "init.sql")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write init file: %v", err)
+	}
+	return path
+}
+
+func TestManager_ReloadInitFile_NoInitFileConfigured(t *testing.T) {
+	mgr := setupManagerWithInitFile(t, "")
+	if _, err := mgr.ReloadInitFile(); err == nil {
+		t.Error("expected error when no init_file is configured, got nil")
+	}
+}
+
+func TestManager_ReloadInitFile_RunsAgain(t *testing.T) {
+	path := writeInitFile(t, `CREATE OR REPLACE MACRO greeting() AS 'hello';`)
+	mgr := setupManagerWithInitFile(t, path)
+
+	n, err := mgr.ReloadInitFile()
+	if err != nil {
+		t.Fatalf("first reload failed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 statement executed, got %d", n)
+	}
+
+	var greeting string
+	if err := mgr.mainDB.QueryRow("SELECT greeting()").Scan(&greeting); err != nil {
+		t.Fatalf("macro not callable after reload: %v", err)
+	}
+	if greeting != "hello" {
+		t.Errorf("expected 'hello', got %q", greeting)
+	}
+
+	// Simulate an ops edit to the init file, then reload again -- the macro
+	// should reflect the new definition without restarting the process.
+	if err := os.WriteFile(path, []byte(`CREATE OR REPLACE MACRO greeting() AS 'goodbye';`), 0644); err != nil {
+		t.Fatalf("failed to rewrite init file: %v", err)
+	}
+	if _, err := mgr.ReloadInitFile(); err != nil {
+		t.Fatalf("second reload failed: %v", err)
+	}
+	if err := mgr.mainDB.QueryRow("SELECT greeting()").Scan(&greeting); err != nil {
+		t.Fatalf("macro not callable after second reload: %v", err)
+	}
+	if greeting != "goodbye" {
+		t.Errorf("expected 'goodbye' after reload, got %q", greeting)
+	}
+}
+
+func TestManager_ReloadInitFile_NonIdempotentStatementFailsCleanly(t *testing.T) {
+	// A bare CREATE TABLE (no IF NOT EXISTS/OR REPLACE) is exactly the kind of
+	// init.sql statement that works once at startup but must fail -- loudly,
+	// not silently -- on a second reload. This documents that failure mode
+	// rather than papering over it (see plans/reload-without-restart.md).
+	path := writeInitFile(t, `CREATE TABLE reload_test (x INTEGER);`)
+	mgr := setupManagerWithInitFile(t, path)
+
+	if _, err := mgr.ReloadInitFile(); err != nil {
+		t.Fatalf("first reload failed: %v", err)
+	}
+	if _, err := mgr.ReloadInitFile(); err == nil {
+		t.Error("expected second reload of a non-idempotent CREATE TABLE to fail, got nil error")
+	}
+}
+
+func TestManager_ReloadInitFile_MissingFile(t *testing.T) {
+	mgr := setupManagerWithInitFile(t, "/nonexistent/path/init.sql")
+	if _, err := mgr.ReloadInitFile(); err == nil {
+		t.Error("expected error for a missing init file, got nil")
 	}
 }
 

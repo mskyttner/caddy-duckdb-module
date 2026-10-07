@@ -40,6 +40,7 @@ type Manager struct {
 	mainDB        *sql.DB
 	authDB        *sql.DB
 	authDBPath    string   // stored for error messages
+	initFilePath  string   // stored so ReloadInitFile can re-run it without a restart
 	tableSchemas  sync.Map // map[string][]string - cache of table->columns
 	preparedStmts sync.Map // map[string]*sql.Stmt - cache of query->statement
 	queryTimeout  time.Duration
@@ -52,6 +53,7 @@ func NewManager(cfg Config) (*Manager, error) {
 		queryTimeout: cfg.QueryTimeout,
 		logger:       cfg.Logger,
 		authDBPath:   cfg.AuthDBPath,
+		initFilePath: cfg.InitFilePath,
 	}
 
 	// Initialize main database.
@@ -104,7 +106,7 @@ func NewManager(cfg Config) (*Manager, error) {
 	// Execute init file for the standard (non-bootstrap) path.
 	// The bootstrap path runs the init file inside openWithMemoryBootstrap.
 	if cfg.InitFilePath != "" && !useMemoryBootstrap {
-		if err := mgr.loadInitFile(cfg.InitFilePath); err != nil {
+		if _, err := mgr.loadInitFile(cfg.InitFilePath); err != nil {
 			mgr.mainDB.Close()
 			return nil, fmt.Errorf("failed to execute init file: %w", err)
 		}
@@ -256,6 +258,7 @@ func NewManagerForTesting(cfg Config) (*Manager, error) {
 		queryTimeout: cfg.QueryTimeout,
 		logger:       cfg.Logger,
 		authDBPath:   cfg.AuthDBPath,
+		initFilePath: cfg.InitFilePath,
 	}
 
 	if mgr.logger == nil {
@@ -725,7 +728,7 @@ func (m *Manager) openWithMemoryBootstrap(cfg Config) (*sql.DB, error) {
 	// land in the memory catalog and are visible to all connections since
 	// they share the same in-memory DuckDB instance.
 	m.mainDB = db
-	if err := m.loadInitFile(cfg.InitFilePath); err != nil {
+	if _, err := m.loadInitFile(cfg.InitFilePath); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to execute init file (memory-bootstrap): %w", err)
 	}
