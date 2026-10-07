@@ -742,7 +742,7 @@ Response (~15 tokens regardless of result size):
 }
 ```
 
-Exported files are served as static files from the configured `exports_dir` and are cleaned up after `export_ttl_minutes` (default: 60).
+Exported files are served as static files from the configured `exports_dir` and are cleaned up after `export_ttl_minutes` (default: 60). Downloads support conditional GET (`ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since`) and `Range` requests, so a client re-requesting the same URL gets a `304 Not Modified` instead of re-downloading — each file's name is already a UUID unique to that export, so the ETag is just the filename, and `Last-Modified` is the file's own write time. The same applies to `ggsql_chart`'s materialized output, which is served through these same download endpoints.
 
 #### Public (Auth-Free) Exports
 

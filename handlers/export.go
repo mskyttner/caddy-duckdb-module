@@ -452,6 +452,19 @@ func (h *ExportHandler) ServeDownload(w http.ResponseWriter, r *http.Request, ur
 	}
 	defer f.Close()
 
+	h.serveFile(w, r, filename, f)
+}
+
+// serveFile sets the Content-Type/Content-Disposition for filename, then
+// serves f via http.ServeContent with real conditional-GET support: an ETag
+// (the filename itself -- already a UUID, unique per export, and the file is
+// immutable for its lifetime, so this costs nothing to compute and is always
+// correct) and a Last-Modified from the file's own mtime (export files are
+// written once and never touched again, so mtime is exact, not approximate).
+// Shared by ServeDownload and ServePublicDownload -- and, transitively, by
+// ggsql_chart's materialized output, which goes through the same two
+// download endpoints via ExportHandler.writeChartArtifact.
+func (h *ExportHandler) serveFile(w http.ResponseWriter, r *http.Request, filename string, f *os.File) {
 	switch {
 	case strings.HasSuffix(filename, ".csv"):
 		w.Header().Set("Content-Type", "text/csv")
@@ -460,13 +473,19 @@ func (h *ExportHandler) ServeDownload(w http.ResponseWriter, r *http.Request, ur
 	case strings.HasSuffix(filename, ".html"):
 		// Chart exports render inline (e.g. in an iframe) rather than downloading.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		http.ServeContent(w, r, filename, time.Time{}, f)
-		return
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
-	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
-	http.ServeContent(w, r, filename, time.Time{}, f)
+	if !strings.HasSuffix(filename, ".html") {
+		w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+	}
+
+	w.Header().Set("ETag", `"`+filename+`"`)
+	var modTime time.Time
+	if fi, statErr := f.Stat(); statErr == nil {
+		modTime = fi.ModTime()
+	}
+	http.ServeContent(w, r, filename, modTime, f)
 }
 
 // ServePublicDownload handles GET /duckdb/public-exports/<filename>.
@@ -500,21 +519,7 @@ func (h *ExportHandler) ServePublicDownload(w http.ResponseWriter, r *http.Reque
 	}
 	defer f.Close()
 
-	switch {
-	case strings.HasSuffix(filename, ".csv"):
-		w.Header().Set("Content-Type", "text/csv")
-	case strings.HasSuffix(filename, ".json"):
-		w.Header().Set("Content-Type", "application/json")
-	case strings.HasSuffix(filename, ".html"):
-		// Chart exports render inline (e.g. in an iframe) rather than downloading.
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		http.ServeContent(w, r, filename, time.Time{}, f)
-		return
-	default:
-		w.Header().Set("Content-Type", "application/octet-stream")
-	}
-	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
-	http.ServeContent(w, r, filename, time.Time{}, f)
+	h.serveFile(w, r, filename, f)
 }
 
 func (h *ExportHandler) sendError(w http.ResponseWriter, message string, statusCode int) {
