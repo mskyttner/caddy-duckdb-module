@@ -1038,6 +1038,118 @@ func TestServeHTTP_CRUDEndpoint_WithAuth(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_HTMLEndpoint_WithAuth(t *testing.T) {
+	d, cleanup := setupTestModule(t)
+	defer cleanup()
+
+	d.htmlHandler = handlers.NewHTMLHandler(d.dbMgr, d.authorizer, d.logger)
+
+	if _, err := d.dbMgr.ExecMain(`CREATE TABLE pub (id INTEGER PRIMARY KEY, html VARCHAR)`); err != nil {
+		t.Fatalf("Failed to create pub table: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`INSERT INTO pub VALUES (1, '<p>hi</p>')`); err != nil {
+		t.Fatalf("Failed to insert pub row: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/duckdb/html/pub/1", nil)
+	req.Header.Set("X-API-Key", "test-api-key")
+	rec := httptest.NewRecorder()
+	next := &mockNextHandler{}
+
+	if err := d.ServeHTTP(rec, req, next); err != nil {
+		t.Errorf("ServeHTTP returned error: %v", err)
+	}
+	if next.called {
+		t.Error("HTML endpoint should not call next handler")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestServeHTTP_HTMLEndpoint_PublicRoleFallback_OK verifies that a request
+// to /html/{table}/{id} with no API key is treated as the reserved "public"
+// role instead of being rejected with 401 outright, and succeeds once an
+// admin has granted "public" can_read on that specific table.
+func TestServeHTTP_HTMLEndpoint_PublicRoleFallback_OK(t *testing.T) {
+	d, cleanup := setupTestModule(t)
+	defer cleanup()
+
+	d.htmlHandler = handlers.NewHTMLHandler(d.dbMgr, d.authorizer, d.logger)
+
+	if _, err := d.dbMgr.ExecMain(`CREATE TABLE pub (id INTEGER PRIMARY KEY, html VARCHAR)`); err != nil {
+		t.Fatalf("Failed to create pub table: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`INSERT INTO pub VALUES (1, '<p>hi</p>')`); err != nil {
+		t.Fatalf("Failed to insert pub row: %v", err)
+	}
+	if err := d.authorizer.CreateRole("public", "unauthenticated read-only access"); err != nil {
+		t.Fatalf("Failed to create public role: %v", err)
+	}
+	if _, err := d.dbMgr.AuthDB().Exec(`
+		INSERT INTO permissions (id, role_name, table_name, can_read)
+		VALUES (nextval('permissions_id_seq'), 'public', 'pub', true)
+	`); err != nil {
+		t.Fatalf("Failed to grant public permission: %v", err)
+	}
+
+	// No X-API-Key header at all.
+	req := httptest.NewRequest("GET", "/duckdb/html/pub/1", nil)
+	rec := httptest.NewRecorder()
+	next := &mockNextHandler{}
+
+	if err := d.ServeHTTP(rec, req, next); err != nil {
+		t.Errorf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestServeHTTP_HTMLEndpoint_PublicRoleFallback_Unauthorized verifies that
+// without an explicit "public" grant on the table, the same unauthenticated
+// request is rejected -- the fallback only ever widens access to tables an
+// admin opted in, never to every table by default.
+func TestServeHTTP_HTMLEndpoint_PublicRoleFallback_Unauthorized(t *testing.T) {
+	d, cleanup := setupTestModule(t)
+	defer cleanup()
+
+	d.htmlHandler = handlers.NewHTMLHandler(d.dbMgr, d.authorizer, d.logger)
+
+	if _, err := d.dbMgr.ExecMain(`CREATE TABLE pub (id INTEGER PRIMARY KEY, html VARCHAR)`); err != nil {
+		t.Fatalf("Failed to create pub table: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/duckdb/html/pub/1", nil)
+	rec := httptest.NewRecorder()
+	next := &mockNextHandler{}
+
+	if err := d.ServeHTTP(rec, req, next); err != nil {
+		t.Errorf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d. Body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestServeHTTP_OtherEndpoints_StillRequireAuth verifies the public-role
+// fallback is scoped to /html/ only -- every other endpoint still 401s
+// outright with no API key, unaffected by this change.
+func TestServeHTTP_OtherEndpoints_StillRequireAuth(t *testing.T) {
+	d, cleanup := setupTestModule(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/duckdb/api/test_data", nil)
+	rec := httptest.NewRecorder()
+	next := &mockNextHandler{}
+
+	d.ServeHTTP(rec, req, next)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", rec.Code)
+	}
+}
+
 func TestServeHTTP_OpenAPIWithHandler(t *testing.T) {
 	d, cleanup := setupTestModule(t)
 	defer cleanup()

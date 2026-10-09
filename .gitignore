@@ -77,3 +77,4 @@ swagger-ui-dist/
 *.pyc
 __pycache__/
 examples/conversations/
+.mcp.json
