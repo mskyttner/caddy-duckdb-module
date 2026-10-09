@@ -180,6 +180,12 @@ func (h *OpenAPIHandler) generatePaths() map[string]interface{} {
 		"/public-exports/{filename}": map[string]interface{}{
 			"get": h.generatePublicExportDownloadOperation(),
 		},
+		"/html/{table}/{id}": map[string]interface{}{
+			"get": h.generateHTMLRecordOperation(),
+		},
+		"/html/{table}": map[string]interface{}{
+			"get": h.generateHTMLListingOperation(),
+		},
 		"/mcp": map[string]interface{}{
 			"post": h.generateMCPOperation(),
 		},
@@ -1762,6 +1768,142 @@ func (h *OpenAPIHandler) generatePublicExportDownloadOperation() map[string]inte
 				},
 			},
 			"404": map[string]interface{}{"description": "File not found or expired"},
+			"405": map[string]interface{}{"description": "Method not allowed"},
+		},
+	}
+}
+
+// generateHTMLRecordOperation generates the GET /html/{table}/{id} operation spec.
+func (h *OpenAPIHandler) generateHTMLRecordOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":    []string{"HTML"},
+		"summary": "Serve a table row as an HTML document",
+		"description": "Serves a single row's rendered HTML column as a browser-facing document, with ETag-based " +
+			"conditional GET support (`If-None-Match` -> `304`). Reads the `html` column matched against the `id` " +
+			"column by default; override with `html_column`/`id_column` query parameters. If a table macro named " +
+			"`{table}_html` exists, it's called instead of reading the column directly (`SELECT html FROM {table}_html($1)` " +
+			"with `id` bound), enabling on-the-fly rendering, e.g. via the DuckDB `tera` community extension. " +
+			"Access is gated by the same `can_read` permission `GET /api/{table}` checks. An API key is optional: " +
+			"an unauthenticated request is checked against a reserved `public` role instead, so a table an admin has " +
+			"granted `public` read access to is servable with no credentials at all.",
+		"operationId": "getHTMLRecord",
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "table",
+				"in":          "path",
+				"required":    true,
+				"description": "Name of the database table",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			{
+				"name":        "id",
+				"in":          "path",
+				"required":    true,
+				"description": "Row identifier, matched against id_column",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			{
+				"name":        "html_column",
+				"in":          "query",
+				"required":    false,
+				"description": "Column (or table macro's output column) holding the rendered HTML. Defaults to `html`.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			{
+				"name":        "id_column",
+				"in":          "query",
+				"required":    false,
+				"description": "Column to match the id path parameter against (ignored when a `{table}_html` macro is used). Defaults to `id`.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Rendered HTML document",
+				"content": map[string]interface{}{
+					"text/html": map[string]interface{}{"schema": map[string]interface{}{"type": "string"}},
+				},
+			},
+			"304": map[string]interface{}{"description": "Not Modified (If-None-Match matched the current ETag)"},
+			"400": map[string]interface{}{"description": "Invalid table/column name or missing id"},
+			"401": map[string]interface{}{"description": "No API key and the table is not granted to the public role"},
+			"403": map[string]interface{}{"description": "Authenticated but insufficient permissions, or internal table"},
+			"404": map[string]interface{}{"description": "Table or row not found"},
+			"405": map[string]interface{}{"description": "Method not allowed"},
+		},
+	}
+}
+
+// generateHTMLListingOperation generates the GET /html/{table} operation spec.
+func (h *OpenAPIHandler) generateHTMLListingOperation() map[string]interface{} {
+	return map[string]interface{}{
+		"tags":    []string{"HTML"},
+		"summary": "Serve an index or search-results page for a table",
+		"description": "Serves an index or search-results page, with the same ETag-based conditional GET support " +
+			"as GET /html/{table}/{id}. If `q` is present and a table macro named `{table}_html_search` exists, " +
+			"it's called with `q` bound as the sole parameter. Otherwise, if a table macro named `{table}_html_index` " +
+			"exists, it's called with `page` (default `1`) bound as the sole parameter. If neither macro exists, " +
+			"returns 404 -- there's no static-column fallback for a listing. Access is gated by the same `can_read` " +
+			"permission the record endpoint and `GET /api/{table}` check, including the optional `public`-role fallback.",
+		"operationId": "getHTMLListing",
+		"parameters": []map[string]interface{}{
+			{
+				"name":        "table",
+				"in":          "path",
+				"required":    true,
+				"description": "Name of the database table",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			{
+				"name":        "q",
+				"in":          "query",
+				"required":    false,
+				"description": "Search term. Dispatches to `{table}_html_search` if present and that macro exists.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			{
+				"name":        "page",
+				"in":          "query",
+				"required":    false,
+				"description": "Page number, bound into `{table}_html_index`. Defaults to `1`.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			{
+				"name":        "html_column",
+				"in":          "query",
+				"required":    false,
+				"description": "The listing macro's output column holding the rendered HTML. Defaults to `html`.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+			},
+		},
+		"responses": map[string]interface{}{
+			"200": map[string]interface{}{
+				"description": "Rendered HTML listing page",
+				"content": map[string]interface{}{
+					"text/html": map[string]interface{}{"schema": map[string]interface{}{"type": "string"}},
+				},
+			},
+			"304": map[string]interface{}{"description": "Not Modified (If-None-Match matched the current ETag)"},
+			"400": map[string]interface{}{"description": "Invalid table/column name"},
+			"401": map[string]interface{}{"description": "No API key and the table is not granted to the public role"},
+			"403": map[string]interface{}{"description": "Authenticated but insufficient permissions, or internal table"},
+			"404": map[string]interface{}{"description": "Table not found, or no index/search macro defined for it"},
 			"405": map[string]interface{}{"description": "Method not allowed"},
 		},
 	}

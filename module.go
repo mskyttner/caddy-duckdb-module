@@ -160,6 +160,7 @@ type DuckDB struct {
 	executeHandler    *handlers.ExecuteHandler
 	exportHandler     *handlers.ExportHandler
 	importHandler     *handlers.ImportHandler
+	htmlHandler       *handlers.HTMLHandler
 	mcpHandler        *handlers.MCPHandler
 	adminHandler      *handlers.AdminHandler
 	routePrefix       string // set from DUCKDB_ROUTE_PREFIX env var, defaults to /duckdb
@@ -265,6 +266,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 	d.httpserverHandler = handlers.NewHTTPServerHandler(d.dbMgr, d.authorizer, d.logger)
 	d.executeHandler = handlers.NewExecuteHandler(d.dbMgr, d.authorizer, d.logger)
 	d.adminHandler = handlers.NewAdminHandler(d.dbMgr, d.authorizer, d.logger)
+	d.htmlHandler = handlers.NewHTMLHandler(d.dbMgr, d.authorizer, d.logger)
 
 	// Initialize export handler (env var fallbacks for optional settings)
 	if d.ExportsDir == "" {
@@ -540,6 +542,19 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 	}
 
+	// --- Public HTML fallback ---
+	// /html/{table}/{id} tolerates missing credentials: an unauthenticated
+	// request is treated as the reserved "public" role rather than rejected
+	// outright. HTMLHandler's own per-table CheckPermission(role, table,
+	// OperationRead) call still gates access -- "public" only reads tables
+	// an admin explicitly granted it can_read on. See handlers/html.go and
+	// plans/integrate-caddy-html-duckdb.md.
+	if !authenticated && strings.HasPrefix(r.URL.Path, d.routePrefix+"/html/") {
+		syntheticKey := &auth.APIKey{Key: "", RoleName: "public", IsActive: true}
+		r = r.WithContext(auth.SetContextValues(r.Context(), syntheticKey, "public"))
+		authenticated = true
+	}
+
 	if !authenticated {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -616,6 +631,11 @@ func (d *DuckDB) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/exports/") {
 		// Download a previously exported file
 		d.exportHandler.ServeDownload(w, r, d.routePrefix+"/exports")
+		return nil
+	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/html/") {
+		// Serve a single table row's rendered HTML column (or a dynamic
+		// "{table}_html" macro, if one exists) as a browser-facing document
+		d.htmlHandler.ServeHTTP(w, r, d.routePrefix+"/html")
 		return nil
 	} else if strings.HasPrefix(r.URL.Path, d.routePrefix+"/mcp") {
 		// MCP streamable-HTTP endpoint for LLM clients

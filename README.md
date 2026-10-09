@@ -499,6 +499,7 @@ All endpoints are under the configured route prefix (default: `/duckdb`). All re
 | `/export` | POST | key | Run SQL → server file → return URL |
 | `/exports/{filename}` | GET | none (UUID token) | Download an exported file |
 | `/public-exports/{filename}` | GET | none (UUID token) | Download a public exported file (no auth needed) |
+| `/html/{table}/{id}` | GET, HEAD | key, or none if `public` role granted `can_read` | Serve a row's rendered HTML column — see [below](#html-record-endpoint) |
 | `/mcp` | POST | key | MCP streamable-HTTP endpoint |
 | `/` | POST | key | httpserver-compatible: raw SQL body |
 | `/` | HEAD | key | Endpoint probe (duck-ui) |
@@ -779,6 +780,117 @@ Requires the `ggsql` DuckDB extension (pre-installed in the Docker image). See `
 `ggsql skill` for the full `VISUALIZE`/`DRAW`/`SCALE`/`FACET`/`LABEL` grammar, or the
 `ggsql-syntax` MCP doc resource / `duckdb://docs/ggsql-syntax` for the same reference served by
 this module.
+
+### HTML Record Endpoint
+
+`GET`/`HEAD /duckdb/html/{table}/{id}` — Serves a single row's rendered HTML column as a browser-facing document, with ETag-based conditional GET support (`If-None-Match` → `304`). `HEAD` returns the same `Content-Type`/`ETag` headers with no body — note that, unlike the cheap query-free `HEAD` on `/api/{table}`, this still renders the row to compute its ETag.
+
+```bash
+curl http://localhost:8080/duckdb/html/publications/42 \
+  -H "X-API-Key: your-api-key"
+```
+
+By default it reads the `html` column, matched against the `id` column, via `?html_column=`/`?id_column=` if your table uses different names:
+
+```bash
+curl "http://localhost:8080/duckdb/html/docs/42?html_column=rendered&id_column=doc_id" \
+  -H "X-API-Key: your-api-key"
+```
+
+Access is gated by the same `can_read` permission `GET /api/{table}` already checks — no separate permission bit.
+
+#### Dynamic Rendering via a Table Macro
+
+If a table macro named `{table}_html` exists, it's called instead of reading the column directly — `SELECT html FROM {table}_html($1)` with `id` bound. This lets a row be rendered on the fly, e.g. with the DuckDB [`tera`](https://community-extensions.duckdb.org/extensions/tera.html) community extension:
+
+```sql
+install tera from community;
+load tera;
+
+CREATE OR REPLACE MACRO publications_html(req_id) AS TABLE (
+    SELECT tera_render(
+        'record.html',
+        json_object('id', id, 'title', title, 'abstract', abstract),
+        template_path := 'templates/*.html'
+    ) AS html
+    FROM publications
+    WHERE id = req_id::BIGINT
+);
+```
+
+The Tera extension, templates, and field mapping are entirely deployment-owned init SQL — the module only needs the macro name convention and a column holding the rendered HTML.
+
+#### Public (Auth-Free) Access
+
+Unauthenticated requests to this endpoint (no API key, no trusted-user header) are checked against a reserved `public` role instead of being rejected with `401` outright. Grant it read access to specific tables the same way you'd grant any other role:
+
+```bash
+./tools/auth-db role add -d data/auth.db -n public --desc "unauthenticated read-only access"
+./tools/auth-db permission add -d data/auth.db -r public -t publications -o r
+```
+
+A table with no `public` permission row behaves exactly as before (`401` without an API key). This only ever grants read access to the rendered HTML column — every other operation (`can_create`/`can_update`/`can_delete`/`can_query`/`can_execute`) is unaffected, since `public` is just an ordinary role name to the permission checker.
+
+#### Index and Search Pages
+
+`GET`/`HEAD /duckdb/html/{table}` (no `id`) serves an index or search-results page instead of a single record, with the same ETag/`public`-role/permission behavior as the record endpoint:
+
+```bash
+curl "http://localhost:8080/duckdb/html/publications?q=duckdb" \
+  -H "X-API-Key: your-api-key"
+
+curl "http://localhost:8080/duckdb/html/publications?page=2" \
+  -H "X-API-Key: your-api-key"
+```
+
+- If `?q=` is present and a table macro named `{table}_html_search` exists, it's called with `q` bound as the sole parameter.
+- Otherwise, if a table macro named `{table}_html_index` exists, it's called with `page` (query param, default `1`) bound as the sole parameter.
+- If neither macro exists, this returns `404` — there's no static-column fallback for a listing, since there's no single row to read a column from.
+
+Both macros follow the same single-output-column convention as `{table}_html`:
+
+```sql
+CREATE OR REPLACE MACRO publications_html_search(q) AS TABLE (
+    WITH results AS (
+        SELECT id, title FROM publications
+        WHERE title ILIKE '%' || q || '%'
+        ORDER BY year DESC LIMIT 20
+    )
+    SELECT tera_render(
+        'search.html',
+        json_object(
+            'query', q,
+            'base_path', 'works',  -- see "Relative links" below
+            'items', (SELECT json_group_array(json_object('id', id, 'title', title)) FROM results)
+        ),
+        template_path := 'templates/*.html'
+    ) AS html
+);
+
+CREATE OR REPLACE MACRO publications_html_index(page) AS TABLE (
+    SELECT tera_render(
+        'index.html',
+        json_object(
+            'page', page::INTEGER,
+            'base_path', 'works',
+            'items', (SELECT json_group_array(json_object('id', id, 'title', title)) FROM publications LIMIT 20 OFFSET (page::INTEGER - 1) * 20)
+        ),
+        template_path := 'templates/*.html'
+    ) AS html
+);
+```
+
+##### Relative Links When Served Behind a Different External Path
+
+A record/index/search page is often reverse-proxied under a path that doesn't match this
+module's own `/duckdb/html/{table}` route — e.g. an external router maps `https://host/works/*`
+to this module's `/duckdb/html/publications/*` internally, so a search result needs to link to
+`/works/89`, not `/duckdb/html/publications/89`. This module never inspects or rewrites the
+HTML it serves — it returns the macro's `html` column byte-for-byte — so the macro itself must
+bake in whatever external path its links should use, exactly like `base_path` above (the same
+approach `render_search`/`render_index` already use in a `caddy-html-duckdb`-style deployment).
+There's nothing to configure on the module side: `base_path` is just an ordinary value the
+macro's own SQL passes into the template, independent of how the module is actually routed to.
 
 ### Chart Rendering Endpoint (`/ggsql`)
 
