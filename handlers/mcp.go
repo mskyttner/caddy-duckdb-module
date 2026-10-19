@@ -615,7 +615,7 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				SELECT c.table_catalog, c.table_name, c.column_name, c.data_type
 				FROM information_schema.columns c
 				JOIN information_schema.tables t
-					ON c.table_name = t.table_name AND c.table_schema = t.table_schema
+					ON c.table_catalog = t.table_catalog AND c.table_name = t.table_name AND c.table_schema = t.table_schema
 				WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
 				  AND t.table_type IN ('BASE TABLE', 'VIEW')
 				  AND c.table_name NOT IN ('api_keys', 'roles', 'permissions', 'trusted_users')
@@ -629,7 +629,7 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 					SELECT c.table_name, c.column_name, c.data_type
 					FROM information_schema.columns c
 					JOIN information_schema.tables t
-						ON c.table_name = t.table_name AND c.table_schema = t.table_schema
+						ON c.table_catalog = t.table_catalog AND c.table_name = t.table_name AND c.table_schema = t.table_schema
 					WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
 					  AND t.table_type IN ('BASE TABLE', 'VIEW')
 					  AND c.table_name NOT IN ('api_keys', 'roles', 'permissions', 'trusted_users')
@@ -795,15 +795,15 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 			}
 			safe := strings.ReplaceAll(colName, "'", "''")
 			sql := fmt.Sprintf(`
-				SELECT c.table_name, c.column_name, c.data_type, c.ordinal_position
+				SELECT c.table_catalog, c.table_name, c.column_name, c.data_type, c.ordinal_position
 				FROM information_schema.columns c
 				JOIN information_schema.tables t
-					ON c.table_name = t.table_name AND c.table_schema = t.table_schema
+					ON c.table_catalog = t.table_catalog AND c.table_name = t.table_name AND c.table_schema = t.table_schema
 				WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
 				  AND t.table_type IN ('BASE TABLE', 'VIEW')
 				  AND c.table_name NOT IN ('api_keys', 'roles', 'permissions', 'trusted_users')
 				  AND LOWER(c.column_name) LIKE LOWER('%s')
-				ORDER BY c.table_name, c.ordinal_position
+				ORDER BY c.table_catalog, c.table_name, c.ordinal_position
 			`, safe)
 			return runQueryTool(dbMgr, sql, 500)
 		},
@@ -1085,11 +1085,14 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				"DuckDB databases (especially harvested or parquet-backed ones) rarely declare foreign keys, " +
 				"so shared column names are the practical join graph. " +
 				"Results are grouped by normalised (lower-case) column name and sorted by how many tables share it. " +
+				"'tables' entries are catalog-qualified (catalog.table) so the same table name in different " +
+				"catalogs isn't conflated. " +
 				"Use min_tables to raise the threshold (default 2). " +
-				"Use table_name to focus on what a specific table can join to. " +
+				"Use table_name to focus on what a specific table can join to -- catalog-qualified matches only " +
+				"that catalog's table, bare matches that table name in any catalog. " +
 				"Use max_tables to filter out ubiquitous infrastructure columns (e.g. a 'pid' column in 60 tables).",
 			InputSchema: buildSchema(
-				strProp("table_name", "Optional: restrict to columns that appear in this table (bare or catalog-qualified)", false),
+				strProp("table_name", "Optional: restrict to columns that appear in this table (bare matches any catalog; catalog-qualified matches only that catalog)", false),
 				numProp("min_tables", "Minimum number of tables sharing the column name (default 2)"),
 				numProp("max_tables", "Maximum number of tables — omit or 0 to show all (useful to suppress universal key columns)"),
 			),
@@ -1105,28 +1108,31 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 			maxTables := argInt(req, "max_tables", 0)
 			tableFilter := strings.TrimSpace(argString(req, "table_name", ""))
 
-			// Strip optional catalog prefix for the table name filter
-			filterName := tableFilter
-			if parts := strings.SplitN(tableFilter, ".", 2); len(parts) == 2 {
-				filterName = parts[1]
-			}
-
+			// A catalog-qualified filter (e.g. "diva.works") matches a specific table in a
+			// specific catalog; a bare filter (e.g. "works") matches that table name in any
+			// catalog. Both are applied against "tables", not stripped to a bare name, so a
+			// qualifier actually narrows the result instead of being silently ignored.
 			having := fmt.Sprintf("n_tables >= %d", minTables)
 			if maxTables > 0 {
 				having += fmt.Sprintf(" AND n_tables <= %d", maxTables)
 			}
-			if filterName != "" {
-				having += fmt.Sprintf(" AND list_contains(tables, %s)", quoteLiteral(filterName))
+			if tableFilter != "" {
+				if strings.Contains(tableFilter, ".") {
+					having += fmt.Sprintf(" AND list_contains(tables, %s)", quoteLiteral(tableFilter))
+				} else {
+					having += fmt.Sprintf(" AND len(list_filter(tables, t -> ends_with(t, %s))) > 0",
+						quoteLiteral("."+tableFilter))
+				}
 			}
 
 			sql := fmt.Sprintf(`
 				FROM duckdb_columns()
 				SELECT
-					lower(column_name)                                    AS join_key,
-					list(DISTINCT column_name ORDER BY column_name)       AS name_variants,
-					list(DISTINCT table_name  ORDER BY table_name)        AS tables,
-					list(DISTINCT data_type   ORDER BY data_type)         AS data_types,
-					count(DISTINCT table_name)                            AS n_tables
+					lower(column_name)                                                      AS join_key,
+					list(DISTINCT column_name ORDER BY column_name)                         AS name_variants,
+					list(DISTINCT database_name || '.' || table_name ORDER BY database_name || '.' || table_name) AS tables,
+					list(DISTINCT data_type   ORDER BY data_type)                           AS data_types,
+					count(DISTINCT database_name || '.' || table_name)                       AS n_tables
 				WHERE NOT internal
 				GROUP BY lower(column_name)
 				HAVING %s

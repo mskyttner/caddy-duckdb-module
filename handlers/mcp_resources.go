@@ -139,7 +139,9 @@ func registerHelpTool(srv *mcp.Server) {
 			needle := strings.ToLower(topic)
 			var matches []string
 			for _, s := range sections {
-				if s.id == needle || strings.Contains(s.id, needle) || strings.Contains(strings.ToLower(s.title), needle) {
+				if s.id == needle || strings.Contains(s.id, needle) ||
+					strings.Contains(strings.ToLower(s.title), needle) ||
+					strings.ToLower(s.source) == needle {
 					matches = append(matches, s.content)
 				}
 			}

@@ -2048,6 +2048,123 @@ func TestExampleQueries_OpenAPI_ContainsNewEndpoints(t *testing.T) {
 
 // ─── Env var fallback (PR env-var wiring) ────────────────────────────────────
 
+// ─── Cross-catalog MCP tool bugs (same table name in >1 catalog) ────────────
+
+// attachSecondCatalog attaches a second in-memory catalog named "other" with
+// its own "users" table (same name/schema as the main "users" table, different
+// column set) so cross-catalog join bugs in schema/column_search/relationships
+// actually manifest instead of accidentally passing on a single-catalog setup.
+func attachSecondCatalog(t *testing.T, d *DuckDB) {
+	t.Helper()
+	if _, err := d.dbMgr.ExecMain(`ATTACH ':memory:' AS other`); err != nil {
+		t.Fatalf("attachSecondCatalog: ATTACH: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`CREATE TABLE other.users (id INTEGER PRIMARY KEY, nickname VARCHAR)`); err != nil {
+		t.Fatalf("attachSecondCatalog: create other.users: %v", err)
+	}
+}
+
+func TestExampleQueries_MCP_Schema_NoCrossCatalogDuplication(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+	attachSecondCatalog(t, d)
+
+	resp := mcpCall(t, d, 40, "tools/call", map[string]interface{}{
+		"name":      "schema",
+		"arguments": map[string]interface{}{"table_pattern": "users"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+
+	var parsed map[string][]string
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("schema result is not valid JSON: %v\n%s", err, text)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("expected exactly 2 catalog-qualified 'users' entries, got %d: %v", len(parsed), parsed)
+	}
+	for key, cols := range parsed {
+		seen := map[string]bool{}
+		for _, c := range cols {
+			if seen[c] {
+				t.Errorf("column %q listed more than once for %q (cross-catalog join bug): %v", c, key, cols)
+			}
+			seen[c] = true
+		}
+	}
+}
+
+func TestExampleQueries_MCP_ColumnSearch_NoCrossCatalogDuplication(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+	attachSecondCatalog(t, d)
+
+	resp := mcpCall(t, d, 41, "tools/call", map[string]interface{}{
+		"name":      "column_search",
+		"arguments": map[string]interface{}{"column_name": "id"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+
+	// Both catalogs' "users.id" are legitimate matches (2 rows), but the
+	// pre-fix join matched each one against both catalogs' "users" table,
+	// producing 4. Rely on the table_catalog column now being present and
+	// distinct per row rather than counting raw "id" occurrences, which
+	// would also match "trusted_users"-style substrings.
+	if n := strings.Count(text, "table_catalog"); n == 0 {
+		t.Fatalf("expected table_catalog in column_search result, got: %s", text)
+	}
+	if n := strings.Count(text, `"table_name":"users"`); n != 2 {
+		t.Errorf("expected exactly 2 'users' rows for column 'id' (one per catalog), got %d: %s", n, text)
+	}
+}
+
+func TestExampleQueries_MCP_Relationships_CatalogQualifiedFilter(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+	attachSecondCatalog(t, d)
+
+	// Bare "users" matches the shared "id" column from either catalog's users table.
+	bare := mcpCall(t, d, 42, "tools/call", map[string]interface{}{
+		"name":      "relationships",
+		"arguments": map[string]interface{}{"table_name": "users", "min_tables": 2},
+	})
+	bareText := bare["result"].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(bareText, "id") {
+		t.Fatalf("expected bare table_name='users' to find shared 'id' column, got: %s", bareText)
+	}
+
+	// Catalog-qualified "other.users" must not silently behave the same as bare "users" --
+	// it should still find "id" (the other catalog legitimately has it), but a qualifier
+	// for a catalog that does NOT contain a given relationship must exclude it.
+	qualified := mcpCall(t, d, 43, "tools/call", map[string]interface{}{
+		"name":      "relationships",
+		"arguments": map[string]interface{}{"table_name": "nonexistent_catalog.users", "min_tables": 2},
+	})
+	qualifiedText := qualified["result"].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["text"].(string)
+	if strings.Contains(qualifiedText, "\"id\"") || strings.Contains(qualifiedText, "id\n") {
+		t.Errorf("table_name qualified with a nonexistent catalog should find nothing, got: %s", qualifiedText)
+	}
+}
+
+func TestExampleQueries_MCP_Help_MatchesDocumentName(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 44, "tools/call", map[string]interface{}{
+		"name":      "help",
+		"arguments": map[string]interface{}{"topic": "ggsql-syntax"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if strings.Contains(text, "No sections found") {
+		t.Errorf("help(\"ggsql-syntax\") should match the document name, got: %s", text)
+	}
+}
+
 func TestExampleQueries_EnvVar_ExportsDir(t *testing.T) {
 	dir := t.TempDir()
 	os.Setenv("DUCKDB_EXPORTS_DIR", dir)
