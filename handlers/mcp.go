@@ -86,7 +86,7 @@ SELECT id, arg_max(status, updated_at) AS latest_status FROM events GROUP BY id;
 
 ## Schema Exploration
 ` + "```sql" + `
-SELECT database_name, type, is_read_only FROM duckdb_databases();
+SELECT database_name, type, readonly FROM duckdb_databases();
 SELECT database_name, schema_name, table_name FROM duckdb_tables() WHERE database_name = 'my_db';
 SELECT column_name, data_type FROM duckdb_columns() WHERE table_name = 'my_table';
 SUMMARIZE my_table;  -- per-column statistics
@@ -361,8 +361,9 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				return res, nil
 			}
 			return runQueryTool(dbMgr, `
-				SELECT database_name, type, path, is_attached, is_read_only
+				SELECT database_name, type, path, readonly AS is_read_only
 				FROM duckdb_databases()
+				WHERE NOT internal
 				ORDER BY database_name
 			`, 200)
 		},

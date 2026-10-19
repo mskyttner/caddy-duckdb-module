@@ -1228,6 +1228,25 @@ func TestExampleQueries_MCP_ListExtensions(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_MCP_ListDatabases(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	resp := mcpCall(t, d, 32, "tools/call", map[string]interface{}{
+		"name":      "list_databases",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "database_name") {
+		t.Errorf("expected 'database_name' in list_databases result, got: %s", text)
+	}
+	if strings.Contains(text, "Error") {
+		t.Errorf("list_databases returned an error: %s", text)
+	}
+}
+
 func TestExampleQueries_MCP_Describe(t *testing.T) {
 	d, cleanup := setupExampleModule(t)
 	defer cleanup()
