@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -369,5 +370,60 @@ func TestTruncateStatement(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestExpandEnv(t *testing.T) {
+	t.Setenv("INIT_TEST_KEY", "abc")
+	t.Setenv("INIT_TEST_QUOTE", "it's")
+	t.Setenv("INIT_TEST_EMPTY", "")
+
+	got, err := expandEnv("SELECT '${INIT_TEST_KEY}', '${INIT_TEST_QUOTE}', 'no refs $x {y}'")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "SELECT 'abc', 'it''s', 'no refs $x {y}'"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	_, err = expandEnv("SELECT '${INIT_TEST_EMPTY}', '${INIT_TEST_UNSET}'")
+	if err == nil {
+		t.Fatal("expected error for unset/empty variables")
+	}
+	for _, name := range []string{"INIT_TEST_EMPTY", "INIT_TEST_UNSET"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q should name %s", err, name)
+		}
+	}
+}
+
+func TestManager_ReloadInitFile_ExpandsEnv(t *testing.T) {
+	t.Setenv("INIT_TEST_SECRET", "s3cr3t'value")
+	path := writeInitFile(t, "-- comment mentioning ${NOT_SET_ANYWHERE} is ignored\n"+
+		"CREATE OR REPLACE MACRO secret() AS '${INIT_TEST_SECRET}';")
+	mgr := setupManagerWithInitFile(t, path)
+
+	if _, err := mgr.ReloadInitFile(); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	var got string
+	if err := mgr.mainDB.QueryRow("SELECT secret()").Scan(&got); err != nil {
+		t.Fatalf("macro not callable: %v", err)
+	}
+	if got != "s3cr3t'value" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestManager_ReloadInitFile_UnsetEnvFailsWithoutLeaking(t *testing.T) {
+	path := writeInitFile(t, "CREATE OR REPLACE MACRO secret() AS '${INIT_TEST_UNSET_VAR}';")
+	mgr := setupManagerWithInitFile(t, path)
+
+	_, err := mgr.ReloadInitFile()
+	if err == nil {
+		t.Fatal("expected error for unset variable")
+	}
+	if !strings.Contains(err.Error(), "INIT_TEST_UNSET_VAR") {
+		t.Errorf("error should name the variable: %v", err)
 	}
 }

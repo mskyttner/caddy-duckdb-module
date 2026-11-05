@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"go.uber.org/zap"
@@ -28,7 +29,12 @@ func execInitFileStatements(execer driver.ExecerContext, path string) (int, erro
 	}
 	ctx := context.Background()
 	for i, stmt := range statements {
-		if _, err := execer.ExecContext(ctx, stmt, nil); err != nil {
+		expanded, err := expandEnv(stmt)
+		if err != nil {
+			return 0, fmt.Errorf("failed to execute init statement %d (%s): %w",
+				i+1, truncateStatement(stmt, 50), err)
+		}
+		if _, err := execer.ExecContext(ctx, expanded, nil); err != nil {
 			return 0, fmt.Errorf("failed to execute init statement %d (%s): %w",
 				i+1, truncateStatement(stmt, 50), err)
 		}
@@ -90,7 +96,10 @@ func (m *Manager) loadInitFile(path string) (int, error) {
 			zap.String("statement", truncateStatement(stmt, 100)),
 		)
 
-		_, err := m.mainDB.ExecContext(ctx, stmt)
+		expanded, err := expandEnv(stmt)
+		if err == nil {
+			_, err = m.mainDB.ExecContext(ctx, expanded)
+		}
 		if err != nil {
 			return 0, fmt.Errorf("failed to execute init statement %d (%s): %w",
 				i+1, truncateStatement(stmt, 50), err)
@@ -103,6 +112,32 @@ func (m *Manager) loadInitFile(path string) (int, error) {
 	)
 
 	return len(statements), nil
+}
+
+var envRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// expandEnv replaces ${NAME} in a parsed init statement with the value of the
+// environment variable NAME, so secrets can live in the container environment
+// instead of the init file. Single quotes in a value are doubled, so it is safe
+// inside a '...' SQL string literal (the intended use). An unset or empty
+// variable is an error naming the variable, never its value. Expansion runs on
+// parsed statements, so ${...} in comments is ignored, and callers log and
+// report the unexpanded statement so values never reach logs or error messages.
+func expandEnv(stmt string) (string, error) {
+	var missing []string
+	out := envRefPattern.ReplaceAllStringFunc(stmt, func(ref string) string {
+		name := envRefPattern.FindStringSubmatch(ref)[1]
+		val := os.Getenv(name)
+		if val == "" {
+			missing = append(missing, name)
+			return ref
+		}
+		return strings.ReplaceAll(val, "'", "''")
+	})
+	if len(missing) > 0 {
+		return "", fmt.Errorf("environment variable(s) not set or empty: %s", strings.Join(missing, ", "))
+	}
+	return out, nil
 }
 
 // parseSQL parses SQL content into individual statements.
