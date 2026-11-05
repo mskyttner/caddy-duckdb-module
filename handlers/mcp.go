@@ -816,10 +816,13 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 		&mcp.Tool{
 			Name: "row_counts",
 			Description: "Return row count(s). If 'table' is given, count that table only. " +
-				"If omitted, counts all non-internal tables. " +
+				"If omitted, counts all non-internal tables across all catalogs (or just 'database' " +
+				"if given), one query per table so a single broken view can't fail the whole call -- " +
+				"it comes back as an 'error' entry alongside the tables that did count. " +
 				"For parquet-backed views DuckDB reads row-group metadata — typically fast even for billions of rows.",
 			InputSchema: buildSchema(
 				strProp("table", "Table or view name (omit for all tables)", false),
+				strProp("database", "Optional: restrict to this catalog when 'table' is omitted", false),
 			),
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -841,14 +844,20 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				sql := fmt.Sprintf("SELECT '%s' AS table_name, COUNT(*) AS row_count FROM %s", table, table)
 				return runQueryTool(dbMgr, sql, 1)
 			}
-			listSQL := `
-				SELECT t.table_name
+			database := argString(req, "database", "")
+			dbFilter := ""
+			if database != "" {
+				dbFilter = "AND t.table_catalog = " + quoteLiteral(database)
+			}
+			listSQL := fmt.Sprintf(`
+				SELECT t.table_catalog, t.table_schema, t.table_name
 				FROM information_schema.tables t
 				WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
 				  AND t.table_type IN ('BASE TABLE', 'VIEW')
 				  AND t.table_name NOT IN ('api_keys', 'roles', 'permissions', 'trusted_users')
-				ORDER BY t.table_name
-			`
+				  %s
+				ORDER BY t.table_catalog, t.table_schema, t.table_name
+			`, dbFilter)
 			_, tableRows, _, err := queryRowsRaw(dbMgr, listSQL, 2000)
 			if err != nil {
 				return textResult("Error: " + err.Error()), nil
@@ -856,17 +865,38 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 			if len(tableRows) == 0 {
 				return textResult(`{"tables":[]}`), nil
 			}
-			var parts []string
+			var results []map[string]any
 			for _, row := range tableRows {
+				catalog, _ := row["table_catalog"].(string)
+				schema, _ := row["table_schema"].(string)
 				name, _ := row["table_name"].(string)
 				if name == "" {
 					continue
 				}
-				parts = append(parts, fmt.Sprintf("SELECT '%s' AS table_name, COUNT(*) AS row_count FROM %s",
-					strings.ReplaceAll(name, "'", "''"), name))
+				qualified := quoteIdent(catalog) + "." + quoteIdent(schema) + "." + quoteIdent(name)
+				entry := map[string]any{
+					"table_catalog": catalog,
+					"table_schema":  schema,
+					"table_name":    name,
+				}
+				_, countRows, _, cerr := queryRowsRaw(dbMgr, "SELECT COUNT(*) AS row_count FROM "+qualified, 1)
+				if cerr != nil {
+					entry["error"] = cerr.Error()
+				} else if len(countRows) > 0 {
+					entry["row_count"] = countRows[0]["row_count"]
+				}
+				results = append(results, entry)
 			}
-			sql := strings.Join(parts, " UNION ALL ") + " ORDER BY table_name"
-			return runQueryTool(dbMgr, sql, 2000)
+			out := map[string]any{
+				"columns": []string{"table_catalog", "table_schema", "table_name", "row_count", "error"},
+				"rows":    results,
+				"count":   len(results),
+			}
+			b, err := json.Marshal(out)
+			if err != nil {
+				return textResult("Error: " + err.Error()), nil
+			}
+			return textResult(string(b)), nil
 		},
 	)
 
