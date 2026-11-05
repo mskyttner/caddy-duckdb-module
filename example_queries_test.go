@@ -1788,6 +1788,66 @@ func TestExampleQueries_MCP_RowCounts_InternalTable_Blocked(t *testing.T) {
 	}
 }
 
+func TestExampleQueries_MCP_RowCounts_BrokenViewDoesNotFailWhole(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	if _, err := d.dbMgr.ExecMain(`CREATE TABLE missing_source (id INTEGER)`); err != nil {
+		t.Fatalf("create missing_source: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`CREATE VIEW broken_view AS SELECT * FROM missing_source`); err != nil {
+		t.Fatalf("create broken_view: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`DROP TABLE missing_source`); err != nil {
+		t.Fatalf("drop missing_source: %v", err)
+	}
+
+	resp := mcpCall(t, d, 26, "tools/call", map[string]interface{}{
+		"name":      "row_counts",
+		"arguments": map[string]interface{}{},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+
+	if !strings.Contains(text, `"table_name":"users"`) {
+		t.Errorf("expected 'users' to still be counted despite the broken view, got: %s", text)
+	}
+	if !strings.Contains(text, `"table_name":"broken_view"`) || !strings.Contains(text, `"error"`) {
+		t.Errorf("expected broken_view to appear with an 'error' field, not fail the whole call, got: %s", text)
+	}
+	if strings.HasPrefix(strings.TrimSpace(text), "Error") {
+		t.Errorf("row_counts() should not fail outright when one view is broken, got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_RowCounts_DatabaseFilter(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+
+	if _, err := d.dbMgr.ExecMain(`ATTACH ':memory:' AS other`); err != nil {
+		t.Fatalf("attach other: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`CREATE TABLE other.widgets (id INTEGER)`); err != nil {
+		t.Fatalf("create other.widgets: %v", err)
+	}
+
+	resp := mcpCall(t, d, 27, "tools/call", map[string]interface{}{
+		"name":      "row_counts",
+		"arguments": map[string]interface{}{"database": "other"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+
+	if !strings.Contains(text, `"table_name":"widgets"`) {
+		t.Errorf("expected 'widgets' from the 'other' catalog, got: %s", text)
+	}
+	if strings.Contains(text, `"table_name":"users"`) {
+		t.Errorf("database='other' filter should exclude the main catalog's 'users', got: %s", text)
+	}
+}
+
 // ─── sample_by_id_range ───────────────────────────────────────────────────────
 
 func TestExampleQueries_MCP_SampleByIdRange(t *testing.T) {
