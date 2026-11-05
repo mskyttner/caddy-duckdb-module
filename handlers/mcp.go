@@ -1152,7 +1152,7 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				if strings.Contains(tableFilter, ".") {
 					having += fmt.Sprintf(" AND list_contains(tables, %s)", quoteLiteral(tableFilter))
 				} else {
-					having += fmt.Sprintf(" AND len(list_filter(tables, t -> ends_with(t, %s))) > 0",
+					having += fmt.Sprintf(" AND len(list_filter(tables, lambda t : ends_with(t, %s))) > 0",
 						quoteLiteral("."+tableFilter))
 				}
 			}
