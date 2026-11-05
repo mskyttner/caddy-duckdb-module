@@ -687,6 +687,18 @@ run a second (or third, or Nth) time:
   `examples/init.sql` for a worked example of both the `ATTACH IF NOT EXISTS` and the
   `search_path` reset.
 
+**Secrets via environment variables:** `${NAME}` in an init statement is replaced with the value of the
+environment variable `NAME` before the statement runs, so credentials can stay out of the file (and out of git):
+
+```sql
+CREATE OR REPLACE SECRET s3_data (TYPE S3, KEY_ID '${S3_KEY_ID}', SECRET '${S3_SECRET}');
+```
+
+An unset or empty variable fails the statement with an error naming the variable (never its value), and a failed
+statement is logged and reported with its unexpanded text. Values are inserted as-is except that single quotes are
+doubled, so use `${NAME}` inside a `'...'` literal. Comments are not expanded. DuckDB's `getenv()` is not available in
+the embedded engine, which is why this is done by the module.
+
 Reload is **not transactional** across statements — if one statement fails partway through, the
 already-applied statements from that run stay in effect. This is a cheaper failure at startup
 (the server just doesn't start) than at runtime (the server keeps serving, partially updated), so
