@@ -411,8 +411,8 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 				tableTypes = "'BASE TABLE','VIEW'"
 			}
 			dbFilter := ""
-			if database != "" && isSimpleIdentifier(database) {
-				dbFilter = fmt.Sprintf("AND t.table_catalog = '%s'", database)
+			if database != "" {
+				dbFilter = "AND t.table_catalog = " + quoteLiteral(database)
 			}
 			sql := fmt.Sprintf(`
 				SELECT t.table_catalog, t.table_schema, t.table_name, t.table_type,
@@ -504,13 +504,15 @@ For full syntax reference fetch the ` + "`duckdb://docs/sql-syntax`" + ` resourc
 			}
 			database := argString(req, "database", "")
 			schema := argString(req, "schema", "")
-			target := table
-			if schema != "" && isSimpleIdentifier(schema) {
-				target = schema + "." + target
+			var parts []string
+			if database != "" {
+				parts = append(parts, quoteIdent(database))
 			}
-			if database != "" && isSimpleIdentifier(database) {
-				target = database + "." + target
+			if schema != "" {
+				parts = append(parts, quoteIdent(schema))
 			}
+			parts = append(parts, quoteIdent(table))
+			target := strings.Join(parts, ".")
 			return runQueryTool(dbMgr, "SELECT column_name, column_type FROM (DESCRIBE "+target+")", 500)
 		},
 	)

@@ -50,6 +50,16 @@ func quoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// quoteIdent escapes a string for use as a double-quoted SQL identifier
+// (table, schema, or catalog name). Embedded double quotes are doubled per
+// SQL standard. Unlike isSimpleIdentifier (which rejects names it can't
+// validate), this lets any name through safely, including ones containing
+// hyphens, spaces, or other characters that are valid DuckDB catalog/schema
+// names but fail the identifier regex.
+func quoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
 // isAlias reports whether s is a valid SQL identifier usable as a macro alias:
 // starts with a letter or underscore, followed by letters, digits, or underscores.
 // Dots and spaces are not allowed (unlike isSafeIdentifier which permits dots).

@@ -1212,6 +1212,66 @@ func TestExampleQueries_MCP_ListTables(t *testing.T) {
 	}
 }
 
+// attachHyphenatedCatalog attaches a second in-memory catalog named "my-db"
+// (hyphen deliberately not a simple identifier) with its own "widgets" table,
+// plus a same-named "widgets" table in the main catalog with a different
+// column set -- so a database filter that gets silently dropped returns rows
+// from the wrong catalog instead of just also returning the right ones.
+func attachHyphenatedCatalog(t *testing.T, d *DuckDB) {
+	t.Helper()
+	if _, err := d.dbMgr.ExecMain(`ATTACH ':memory:' AS "my-db"`); err != nil {
+		t.Fatalf("attachHyphenatedCatalog: ATTACH: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`CREATE TABLE "my-db".widgets (widget_id INTEGER, color VARCHAR)`); err != nil {
+		t.Fatalf("attachHyphenatedCatalog: create my-db.widgets: %v", err)
+	}
+	if _, err := d.dbMgr.ExecMain(`CREATE TABLE widgets (id INTEGER, name VARCHAR, price DOUBLE)`); err != nil {
+		t.Fatalf("attachHyphenatedCatalog: create main.widgets: %v", err)
+	}
+}
+
+func TestExampleQueries_MCP_ListTables_HyphenatedCatalogFilter(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+	attachHyphenatedCatalog(t, d)
+
+	resp := mcpCall(t, d, 33, "tools/call", map[string]interface{}{
+		"name":      "list_tables",
+		"arguments": map[string]interface{}{"database": "my-db"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+
+	if strings.Contains(text, `"table_catalog":"memory"`) {
+		t.Errorf("database='my-db' filter should exclude the 'memory' catalog, got: %s", text)
+	}
+	if !strings.Contains(text, `"table_catalog":"my-db"`) {
+		t.Errorf("expected rows from catalog 'my-db', got: %s", text)
+	}
+}
+
+func TestExampleQueries_MCP_Describe_HyphenatedCatalog(t *testing.T) {
+	d, cleanup := setupExampleModule(t)
+	defer cleanup()
+	attachHyphenatedCatalog(t, d)
+
+	resp := mcpCall(t, d, 34, "tools/call", map[string]interface{}{
+		"name":      "describe",
+		"arguments": map[string]interface{}{"database": "my-db", "table": "widgets"},
+	})
+	result := resp["result"].(map[string]interface{})
+	content := result["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+
+	if !strings.Contains(text, "widget_id") || !strings.Contains(text, "color") {
+		t.Errorf("expected my-db.widgets columns (widget_id, color), got: %s", text)
+	}
+	if strings.Contains(text, "price") {
+		t.Errorf("database='my-db' qualifier should not resolve to main catalog's widgets table, got: %s", text)
+	}
+}
+
 func TestExampleQueries_MCP_ListExtensions(t *testing.T) {
 	d, cleanup := setupExampleModule(t)
 	defer cleanup()
