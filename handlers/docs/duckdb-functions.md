@@ -51,14 +51,14 @@ SELECT list_position([10,20,30], 20);      -- 2 (1-based, NULL if absent)
 ### Transformation with lambdas
 ```sql
 -- list_transform (alias: list_apply, apply)
-SELECT list_transform([1,2,3], x -> x * 2);          -- [2,4,6]
-SELECT [1,2,3].list_transform(x -> x * 2);           -- dot-chaining form
+SELECT list_transform([1,2,3], lambda x : x * 2);          -- [2,4,6]
+SELECT [1,2,3].list_transform(lambda x : x * 2);           -- dot-chaining form
 
 -- list_filter
-SELECT list_filter([1,2,3,4], x -> x > 2);           -- [3,4]
+SELECT list_filter([1,2,3,4], lambda x : x > 2);           -- [3,4]
 
 -- list_reduce (left fold)
-SELECT list_reduce([1,2,3,4], (acc, x) -> acc + x);  -- 10
+SELECT list_reduce([1,2,3,4], lambda acc, x : acc + x);    -- 10
 
 -- List comprehension (syntactic sugar)
 SELECT [x * 2 FOR x IN [1,2,3,4] IF x > 1];          -- [4,6,8]

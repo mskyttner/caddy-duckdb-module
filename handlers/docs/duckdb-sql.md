@@ -271,13 +271,13 @@ FROM t SELECT person.name;
 ### Lambda Functions
 ```sql
 -- list_transform: apply function to each element
-SELECT list_transform([1,2,3], x -> x * 2);
+SELECT list_transform([1,2,3], lambda x : x * 2);
 
 -- list_filter: keep elements matching condition
-SELECT list_filter([1,2,3,4], x -> x > 2);
+SELECT list_filter([1,2,3,4], lambda x : x > 2);
 
 -- list_reduce: fold to single value
-SELECT list_reduce([1,2,3,4], (acc, x) -> acc + x);
+SELECT list_reduce([1,2,3,4], lambda acc, x : acc + x);
 ```
 
 ### List Comprehensions

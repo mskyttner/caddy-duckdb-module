@@ -46,7 +46,7 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o caddy ./cmd/caddy
 FROM docker.io/debian:bookworm-slim
 
 # Swagger UI version to download (can be overridden at build time)
-ARG SWAGGER_UI_VERSION=5.32.14
+ARG SWAGGER_UI_VERSION=5.34.1
 
 # Install minimal runtime dependencies
 # - ca-certificates: Required for HTTPS/TLS connections
@@ -54,7 +54,6 @@ ARG SWAGGER_UI_VERSION=5.32.14
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security (with home directory for DuckDB/Caddy config)
@@ -96,28 +95,41 @@ LABEL org.opencontainers.image.title="Caddy DuckDB Module" \
 
 # Install DuckDB CLI and pre-download community extensions (Lance for FTS)
 # The DuckDB version must match the version bundled in duckdb-go-bindings.
-ARG DUCKDB_VERSION=1.5.6
-RUN curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
-      -o /tmp/duckdb.zip && \
-    unzip -o /tmp/duckdb.zip -d /usr/local/bin/ && \
-    rm /tmp/duckdb.zip && \
+# Release asset naming changed as of v2.0.0: duckdb_cli-linux-amd64.zip (old)
+# -> duckdb-cli-linux-amd64.tar.gz (new, hyphenated, gzipped tarball, binary
+# at the archive root) -- confirmed against the real v2.0.0 GitHub release.
+ARG DUCKDB_VERSION=2.0.0
+RUN curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb-cli-linux-amd64.tar.gz" \
+      -o /tmp/duckdb.tar.gz && \
+    tar -xzf /tmp/duckdb.tar.gz -C /usr/local/bin/ && \
+    rm /tmp/duckdb.tar.gz && \
     chmod +x /usr/local/bin/duckdb
 # Pre-install extensions into caddy user's home so they're found at runtime.
 # - lance:       vector/FTS index support (core extension as of DuckDB 1.5.2)
 # - fts:         BM25 full-text search over VARCHAR columns (core extension) —
 #                for keyword-search/autocomplete tools ahead of a Lance rebuild
-# - http_client: HTTP GET/POST functions; successor to http_request (community)
+# - http_client: HTTP GET/POST functions; successor to http_request. As of
+#                DuckDB 2.0 this (and textplot, below) moved from the official
+#                community repo to Query.Farm -- a separate, trusted third-party
+#                extension repository, not DuckDB-maintained. See
+#                plans/upgrade-duckdb-v2.md for why that trust decision was made.
 # - textplot:    ASCII chart functions (tp_bar, tp_sparkline, textplot_histogram)
 # - markdown:    read_markdown() for parsing Markdown files into tables
-# - ggsql:       Grammar-of-Graphics SQL extension; renders standalone HTML charts
-#                via the export tool's format=html (community, alpha — API may shift)
+# - ggsql (Grammar-of-Graphics SQL, used by the export tool's format=html) is
+#   NOT installed here: it 404s against the DuckDB 2.0 community repo as of
+#   this writing (not yet rebuilt upstream). /export?format=html is unavailable
+#   until it's republished -- everything else, including the ggvisual-sidecar-
+#   backed /duckdb/ggsql endpoint and the ggsql_chart MCP tool, is unaffected,
+#   since those never load this extension. Re-add
+#   `INSTALL ggsql FROM community; LOAD ggsql;` below once it's available.
 RUN HOME=/home/caddy duckdb -c " \
+    SET allow_extension_repositories = 'allowed'; \
+    CREATE EXTENSION REPOSITORY IF NOT EXISTS query_farm WITH PREFIX 'https://duckdb-extensions.query.farm'; \
     INSTALL lance; LOAD lance; \
     INSTALL fts; LOAD fts; \
-    INSTALL http_client FROM community; LOAD http_client; \
-    INSTALL textplot FROM community; LOAD textplot; \
+    INSTALL http_client FROM query_farm; LOAD http_client FROM query_farm; \
+    INSTALL textplot FROM query_farm; LOAD textplot FROM query_farm; \
     INSTALL markdown FROM community; LOAD markdown; \
-    INSTALL ggsql FROM community; LOAD ggsql; \
     " && \
     chown -R caddy:caddy /home/caddy/.duckdb
 
