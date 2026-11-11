@@ -68,16 +68,22 @@ CREATE SEQUENCE IF NOT EXISTS kurathor.curation_reviews_id_seq;
 -- (curation_notes may already have rows — use ADD COLUMN IF NOT EXISTS)
 ALTER TABLE kurathor.curation_notes ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR;
 
--- Install and load the http_client community extension.
+-- Install and load the http_client extension.
 -- Successor to http_request (removed after DuckDB 1.5.0).
+-- As of DuckDB 2.0, http_client (and textplot, below) moved from the official
+-- community repo to Query.Farm -- both INSTALL and LOAD need FROM query_farm
+-- explicitly; a bare LOAD after an INSTALL FROM query_farm still fails. See
+-- plans/upgrade-duckdb-v2.md for why Query.Farm is trusted here.
 -- Must run before macro creation; macros are created in :memory: (default catalog).
-install http_client from community;
-load http_client;
+set allow_extension_repositories = 'allowed';
+create extension repository if not exists query_farm with prefix 'https://duckdb-extensions.query.farm';
+install http_client from query_farm;
+load http_client from query_farm;
 
--- Load the textplot community extension for ASCII visualizations.
+-- Load the textplot extension for ASCII visualizations.
 -- Pre-installed in the base image; no INSTALL step needed.
 -- Provides tp_bar(), tp_sparkline(), textplot_histogram() etc.
-load textplot;
+load textplot from query_farm;
 
 -- Helper macro to sanitize text for JSON in BLOB (removes problematic chars).
 -- Note: Backslashes are removed entirely to avoid BLOB escape sequence issues.
